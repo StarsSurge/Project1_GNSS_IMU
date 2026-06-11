@@ -58,7 +58,14 @@ pytest
 
 ## Current Status
 
-This repository currently contains the phase-1 structure and learning notes only. Algorithm implementations will be added step by step.
+This repository contains the phase-1 structure, learning notes, and an initial
+1D constant-velocity Kalman filter prototype:
+
+```powershell
+$env:PYTHONPATH = "$PWD\python"
+python python\examples\demo_1d_kalman_filter.py
+python -m pytest tests
+```
 
 ## Notes for Generated Outputs
 
