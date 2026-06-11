@@ -1,0 +1,46 @@
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+.coverage
+htmlcov/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Build outputs
+build/
+dist/
+*.egg-info/
+
+# CMake / C++
+cpp/build/
+CMakeFiles/
+CMakeCache.txt
+cmake_install.cmake
+compile_commands.json
+*.obj
+*.exe
+*.dll
+*.lib
+*.pdb
+
+# IDE / OS
+.vscode/
+.idea/
+.vs/
+Thumbs.db
+Desktop.ini
+
+# Project generated outputs
+results/*
+!results/README.md
+.matplotlib-cache/
+
+# Local data cache
+data/raw/
+data/cache/
