@@ -44,3 +44,4 @@ results/*
 # Local data cache
 data/raw/
 data/cache/
+data/*.txt data/*.nav

@@ -82,6 +82,16 @@ def main() -> None:
     )
 
     # ---- 生成带噪声的观测（仅位置） ----
+    # 观测方程（线性）：
+    #     z = H @ x + v,   v ~ N(0, σ²·I)
+    #
+    #     ┌     ┐   ┌                ┐ ┌     ┐
+    #     │ z_x │ = │ 1  0  0  0 │   │ px  │   ┌     ┐
+    #     │ z_y │   │ 0  1  0  0 │   │ py  │ + │ v_x │   仅观测位置
+    #     └     ┘   └                ┘ │ vx  │   │ v_y │   速度由滤波器推断
+    #                                  │ vy  │   └     ┘
+    #                                  └     ┘
+    #     H = [I₂, 0₂]  提取前 2 个状态分量（位置）
     rng = np.random.RandomState(42)  # 固定种子，保证可复现
     noisy_pos = true_pos + rng.randn(n_steps, 2) * measurement_noise_std
 
@@ -134,9 +144,26 @@ def main() -> None:
     # ---- 绘图 ----
     try:
         import matplotlib.pyplot as plt
+        import matplotlib.font_manager as fm
     except ImportError:
         print("\n(matplotlib 不可用 — 跳过绘图)")
         return
+
+    # ── 配置中文字体 ──
+    _CHINESE_CANDIDATES = [
+        "Microsoft YaHei", "SimHei", "KaiTi",
+        "Noto Sans CJK SC", "WenQuanYi Micro Hei",
+        "PingFang SC", "Heiti SC",
+    ]
+    available = {f.name for f in fm.fontManager.ttflist}
+    chosen = next((n for n in _CHINESE_CANDIDATES if n in available), None)
+    if chosen:
+        plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
+        plt.rcParams["font.family"] = "sans-serif"
+        print(f"[font] 使用中文字体: {chosen}")
+    else:
+        print("[font] 未找到中文字体，图表中文可能乱码")
+    plt.rcParams["axes.unicode_minus"] = False  # 修复负号显示
 
     os.makedirs("../results", exist_ok=True)
 

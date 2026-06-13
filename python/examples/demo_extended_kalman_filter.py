@@ -91,6 +91,22 @@ def main() -> None:
     )
 
     # ---- 生成带噪声的距离-方位角观测 ----
+    # 观测方程（非线性）—— 这是需要 EKF 而非线性 KF 的核心原因：
+    #     z = h(x) + v
+    #
+    #     ┌   ┐   ┌                         ┐   ┌      ┐
+    #     │ r │ = │ √((px-sx)² + (py-sy)²) │ + │ v_r  │   距离 [m]
+    #     │ θ │   │ atan2(py-sy, px-sx)    │   │ v_θ  │   方位角 [rad]
+    #     └   ┘   └                         ┘   └      ┘
+    #
+    #      v_r ~ N(0, σ_r²),   v_θ ~ N(0, σ_θ²)
+    #
+    # 传感器只能测距离和角度，不能直接测笛卡尔坐标 px, py。
+    # EKF 每步在当前状态处线性化 h(x)，用雅可比 H_jac 近似:
+    #
+    #     H = [[ dx/r,   dy/r,   0, 0 ],
+    #          [-dy/r²,  dx/r²,  0, 0 ]]
+    #
     rng = np.random.RandomState(42)
     true_state = np.array(
         [[true_pos[0, 0]], [true_pos[0, 1]],
@@ -159,9 +175,26 @@ def main() -> None:
     # ---- 绘图 ----
     try:
         import matplotlib.pyplot as plt
+        import matplotlib.font_manager as fm
     except ImportError:
         print("\n(matplotlib 不可用 — 跳过绘图)")
         return
+
+    # ── 配置中文字体 ──
+    _CHINESE_CANDIDATES = [
+        "Microsoft YaHei", "SimHei", "KaiTi",
+        "Noto Sans CJK SC", "WenQuanYi Micro Hei",
+        "PingFang SC", "Heiti SC",
+    ]
+    available = {f.name for f in fm.fontManager.ttflist}
+    chosen = next((n for n in _CHINESE_CANDIDATES if n in available), None)
+    if chosen:
+        plt.rcParams["font.sans-serif"] = [chosen, "DejaVu Sans"]
+        plt.rcParams["font.family"] = "sans-serif"
+        print(f"[font] 使用中文字体: {chosen}")
+    else:
+        print("[font] 未找到中文字体，图表中文可能乱码")
+    plt.rcParams["axes.unicode_minus"] = False  # 修复负号显示
 
     os.makedirs("../results", exist_ok=True)
 

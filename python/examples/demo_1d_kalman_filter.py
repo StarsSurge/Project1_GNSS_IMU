@@ -29,6 +29,14 @@ def main() -> None:
     kf = create_constant_velocity_filter(dt=1.0)
 
     # 观测值：[观测位置 = 1.2 m, 观测速度 = 0.9 m/s]
+    #
+    # 观测方程（线性）：
+    #     z = H @ x + v
+    #     ┌     ┐   ┌       ┐ ┌   ┐   ┌     ┐
+    #     │ z_p │ = │ 1   0 │ │ p │ + │ v_p │   位置和速度均可直接观测
+    #     │ z_v │   │ 0   1 │ │ v │   │ v_v │   H = I₂ (单位阵)
+    #     └     ┘   └       ┘ └   ┘   └     ┘
+    #     v ~ N(0, R),  R = diag(σ²_pos, σ²_vel)
     z = np.array([[1.2], [0.9]])
 
     # ── 初始状态 ──
