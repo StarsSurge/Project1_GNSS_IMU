@@ -67,81 +67,197 @@ constraint issues in the EKF.
 
 ---
 
-## IMU Measurement Model
+## IMU Error Model — Complete Taxonomy
 
-Our Leador-A15 outputs **increments** — pre-integrated quantities — not
-instantaneous rates:
+### A. Systematic Errors (deterministic, can be calibrated)
 
-```
-Δθ = ∫ ω dt    angle increment [rad]
-Δv = ∫ a dt    velocity increment [m/s]
-```
+| Type | Symbol | Unit | Source | Estimable? |
+|------|--------|------|--------|:--:|
+| **Bias** | b_a, b_g | m/s², rad/s | Sensor offset, slowly drifts after power-on | Online (ESKF state) |
+| **Scale Factor** | s_a, s_g | ppm | Linear deviation between output and truth | Online (ESKF state) |
+| **Misalignment** | m_xy, ... | rad | Non-orthogonal axes causing cross-leakage | Factory cal only |
+| **Non-linearity** | — | % | Non-linear response at large inputs | Negligible in rated range |
+| **g-sensitivity** | — | °/h/g | Acceleration affecting gyro output | May be significant for MEMS |
 
-Measurement equations (simplified):
+### B. Stochastic Errors (unpredictable, described statistically)
 
-```
-Δθ = ω_true·dt + b_g·dt + n_g·√dt
-Δv  = a_true·dt + b_a·dt + n_a·√dt
-```
+Five noise types identified by Allan variance:
 
-Biases are modelled as **random walks** driven by white noise:
+| Noise Type | Allan Slope | Physical Meaning | Variance in Q_d |
+|-----------|:--:|------|------|
+| **ARW / VRW** (white noise) | −1/2 | High-frequency random jitter, integrated | σ²·I·dt² |
+| **Bias Instability** | 0 | Slow bias drift magnitude over time | Modelled via σ_ba²·I·dt |
+| **Rate Random Walk** | +1/2 | Random walk driving the bias itself | σ²·I·dt |
+| **Rate Ramp** | +1 | Ultra-slow deterministic drift (ageing) | Usually ignored |
+| **Quantisation** | −1 | A/D discretisation error | Usually ignored |
 
-```
-ḃ_a = n_ba          ḃ_g = n_bg
-```
-
-The complete IMU noise vector is 12-dimensional:
-
-```
-n_imu = [n_a(3), n_g(3), n_ba(3), n_bg(3)]^T   (12×1)
-```
-
----
-
-## INS Mechanisation — Propagating the Nominal State
-
-Mechanisation converts IMU angle and velocity increments into changes in
-position, velocity, and attitude.
-
-### Frame conventions (our dataset)
+### C. Measurement Equations (with scale factor & misalignment)
 
 ```
-IMU frame:  Forward-Right-Down  (X-front, Y-right, Z-down)
-Nav frame:  North-East-Down     (NED)
-Gravity:    g_n = [0, 0, +9.78]^T  (positive-down in NED)
-Rate:       200 Hz, dt = 0.005 s
+Gyro:      Δθ_meas = (I + S_g + M_g)·Δθ_true + b_g·dt + n_g·√dt
+Accel:     Δv_meas  = (I + S_a + M_a)·Δv_true  + b_a·dt + n_a·√dt
 ```
 
-### Mechanisation equations (single-subsample, 1st-order)
+Where S = diag(s_x, s_y, s_z) is scale factor and M is the misalignment matrix.
 
-**(1) Attitude update** — construct incremental quaternion, right-multiply:
+### D. Bias Evolution Model
 
-```
-Δθ  = √(dθ_x² + dθ_y² + dθ_z²)
-u   = [dθ_x, dθ_y, dθ_z] / Δθ
-δq  = [cos(Δθ/2), u·sin(Δθ/2)]^T
-
-q_b^n (new) = q_b^n (old) ⊗ δq    (Hamilton product)
-```
-
-**(2) Velocity update** — rotate body-frame increment to nav-frame, add gravity:
+Standard model is 1st-order Gauss-Markov:
 
 ```
-Δv_n = C_b^n @ Δv
-v_n (new) = v_n (old) + Δv_n + g_n · dt
+ḃ(t) = −(1/τ)·b(t) + w(t)
+
+τ  : correlation time
+w(t): driving white noise, σ² = 2·σ_b²/τ
+
+τ → ∞ : pure random walk (current ESKF simplification)
+τ → 0 : pure white noise
 ```
 
-Where `C_b^n = quat_to_dcm(q_b^n)`.
-
-**(3) Position update** — trapezoidal integration using mean velocity:
+### E. Noise Parameters for Leador-A15 (tactical-grade MEMS)
 
 ```
-p_n (new) = p_n (old) + v_n (old)·dt + 0.5·(Δv_n + g_n·dt)·dt
+Gyro:
+  ARW       : 0.05 °/√h  ≈ 2.5e-4 rad/s/√Hz
+  Bias Inst : 0.5 °/h    ≈ 2.4e-6 rad/s
+
+Accel:
+  VRW       : 0.05 m/s/√h ≈ 8.3e-4 m/s²/√Hz
+  Bias Inst : 50 μg       ≈ 4.9e-4 m/s²
 ```
 
 ---
 
-## Error-State Dynamics — Propagating P
+## INS Precise Mechanisation — Two-Subsample Coning/Sculling Compensation
+
+The fundamental challenge: **IMU measures increments in a rotating body frame,
+but we need navigation state in the fixed nav frame.** If the body rotates
+during dt, the direction of velocity increments changes mid-interval.
+
+### Three Incommutability Errors
+
+**1. Coning —** two orthogonal axes oscillating at the same frequency
+produce a net rotation about the third axis (even with zero net angular rate).
+Analogy: a cone rolling on a table; the cone gains a net spin about its own axis.
+
+**2. Sculling —** angular oscillation × linear oscillation = fictitious
+constant velocity. Analogy: rowing a boat — hand wiggles (angular) and the
+blade pushes water (linear) → boat moves at steady speed.
+
+**3. Rotation Effect —** during dt the body frame rotates; the velocity
+increment measured early in the interval is in a *different* body frame
+than one measured late in the interval.
+
+### Two-Subsample Compensation
+
+Split the navigation interval into two halves `[t, t+T/2]` and `[t+T/2, t+T]`.
+Let Δθ₁,Δθ₂ and Δv₁,Δv₂ be the increments.
+
+**Coning compensation:**
+```
+Δθ_coning = (2/3)·(Δθ₁ × Δθ₂)       ← cross-product correction
+Δθ_corrected = Δθ + Δθ_coning
+```
+
+**Sculling compensation:**
+```
+Δv_scul = (2/3)·(Δθ₁ × Δv₂ + Δv₁ × Δθ₂)
+```
+
+**Rotation effect compensation:**
+```
+Δv_rot = (1/2)·(Δθ × Δv)
+```
+
+**Total velocity correction:**
+```
+Δv_corrected = Δv + Δv_scul + Δv_rot
+```
+
+### Complete Two-Subsample Mechanisation
+
+```
+① Total increments:  Δθ = Δθ₁+Δθ₂,  Δv = Δv₁+Δv₂
+② Coning:            Δθ += (2/3)·(Δθ₁ × Δθ₂)
+③ Sculling:          Δv_scul = (2/3)·(Δθ₁ × Δv₂ + Δv₁ × Δθ₂)
+④ Rotation:          Δv_rot = (1/2)·(Δθ × Δv)
+⑤ Total Δv:          Δv += Δv_scul + Δv_rot
+⑥ Attitude:          q_new = q_old ⊗ axis_angle_to_quat(Δθ)
+⑦ Velocity:          C = quat_to_dcm(q_old); v_new = v_old + C@Δv + g·dt
+⑧ Position:          p_new = p_old + (v_old + v_new)·dt/2
+```
+
+### Accuracy Comparison (vehicle, 200 Hz, ~10°/s, ~0.5 g vib)
+
+| Error | Uncompensated | Two-Subsample |
+|-------|:---:|:---:|
+| Yaw drift (coning) | ~0.1 °/h | ~0.001 °/h |
+| Velocity bias (sculling) | ~0.5 cm/s | ~0.001 cm/s |
+| Position drift (100 s) | ~0.5 m | ~1 mm |
+
+**For MVP**: 200 Hz single-subsample is sufficient to verify the logic.
+For down-sampled processing (e.g. 100 Hz), two-subsample is required.
+
+---
+
+## Error-State Dynamics — Precise P Propagation
+
+### Continuous-Time Error-State Equations
+
+```
+δṗ  = δv
+δv̇  = −C_b^n·[Δv×]·δθ  + C_b^n·δb_a  + C_b^n·n_a     ← attitude→velocity coupling is dominant
+δθ̇  = −C_b^n·δb_g       − C_b^n·n_g
+δḃ_a = n_ba
+δḃ_g = n_bg
+```
+
+### F Matrix — 15×15 Block Structure
+
+```
+     ┌                            ┐
+     │ 0     I₃    0     0     0 │  ← δṗ = δv
+F =  │ 0     0   −C[Δv×]  C     0 │  ← δv̇ = −C[Δv×]δθ + C·δb_a
+     │ 0     0     0     0    −C │  ← δθ̇ = −C·δb_g
+     │ 0     0     0     0     0 │  ← δḃ_a = 0
+     │ 0     0     0     0     0 │  ← δḃ_g = 0
+     └                            ┘
+```
+
+Block (1,2) `−C[Δv×]` is the dominant term: attitude error → wrong gravity
+compensation direction → velocity drifts linearly in time → position drifts quadratically.
+
+### G Matrix — 15×12 Block Structure
+
+```
+     ┌                      ┐
+     │ 0     0    0    0  │
+G =  │ C     0    0    0  │  ← accel noise → velocity
+     │ 0    −C    0    0  │  ← gyro noise → attitude
+     │ 0     0    I₃   0  │  ← accel bias random walk
+     │ 0     0    0    I₃ │  ← gyro bias random walk
+     └                     ┘
+```
+
+### Discretisation Methods
+
+**(A) 1st-order (MVP):** `Φ ≈ I + F·dt` — sufficient at 200 Hz (dt = 5 ms).
+
+**(B) Matrix exponential:** `Φ = exp(F·dt) = I + F·dt + (F·dt)²/2! + ...`
+Upper-triangular F means terms beyond 3rd order are mostly zero.
+
+**(C) van Loan (production):** Construct augmented matrix, compute matrix
+exponential once to obtain both Φ and Q_d simultaneously.
+
+### Discrete Process Noise
+
+```
+Q_c = diag(σ_a²·I₃, σ_g²·I₃, σ_ba²·I₃, σ_bg²·I₃)    (12×12)
+
+Q_d ≈ Q_c · dt                                         (1st-order discrete)
+
+P_pred = Φ @ P @ Φᵀ + G @ Q_d @ Gᵀ
+```
 
 ### Continuous-time error-state equations
 
