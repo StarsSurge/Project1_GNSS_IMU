@@ -1,5 +1,7 @@
 # ESKF MVP 接口约定（双子样精密机械编排）
 
+> **完整算法原理见**: [07_eskf_algorithm_complete.zh-CN.md](07_eskf_algorithm_complete.zh-CN.md)
+>
 > 单文件原型 `prototype/eskf_mvp.py`，约 400 行，仅依赖 numpy。
 > 导航周期 100 Hz（dt=0.01s），每个导航历元使用 **2 个 IMU 子样** (200 Hz 原始数据)。
 > 包含完整的圆锥/划桨/旋转效应补偿。
