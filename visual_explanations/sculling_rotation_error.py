@@ -18,17 +18,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 
+import matplotlib.font_manager as fm
 _CANDIDATES = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
                "PingFang SC", "Heiti SC"]
 _available = {f.name for f in fm.fontManager.ttflist}
 _chosen = next((n for n in _CANDIDATES if n in _available), None)
 if _chosen:
-    plt.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
-    plt.rcParams["font.family"] = "sans-serif"
-plt.rcParams["axes.unicode_minus"] = False
+    matplotlib.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
+    matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["axes.unicode_minus"] = False
+
+import matplotlib.pyplot as plt
 
 # ══════════════════════════════════════════════════════════════════
 # 1. Sculling Simulation
@@ -191,7 +192,7 @@ ax = fig.add_subplot(gs[0, 2])
 ax.bar(range(len(t_show)), np.array(cross_vals)*1e6, color="purple", alpha=0.7)
 ax.set_xlabel("导航历元"); ax.set_ylabel("划桨补偿项 Z [µm/s]")
 ax.set_title("每个导航历元的划桨补偿 (dv_scul)_z\n"
-             "叉积 dv₁×dθ₂ + dθ₁×dv₂ 贡献了 Z 方向的虚假速度")
+             "叉积 dv1 x dth2 + dth1 x dv2 贡献了 Z 方向的虚假速度")
 ax.grid(axis="y", alpha=0.3)
 
 # ── (1,:): Velocity error comparison ──
@@ -234,7 +235,7 @@ for k in range(epoch_show):
 ax = fig.add_subplot(gs[2, 0])
 x_idx = np.arange(epoch_show)
 w = 0.35
-ax.bar(x_idx - w/2, scul_z, w, color="purple", alpha=0.7, label="划桨 (2/3)(dθ₁×dv₂+dv₁×dθ₂)")
+ax.bar(x_idx - w/2, scul_z, w, color="purple", alpha=0.7, label="划桨 (2/3)(dth1 x dv2 + dv1 x dth2)")
 ax.bar(x_idx + w/2, rot_z, w, color="orange", alpha=0.7, label="旋转 (1/2)(dθ×dv)")
 ax.set_xlabel("导航历元"); ax.set_ylabel("补偿量 [nm/s]")
 ax.set_title("每历元的划桨 vs 旋转补偿量\n划桨 ≈ 2× 旋转 (此参数组合下)")

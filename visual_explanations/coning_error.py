@@ -19,17 +19,18 @@ sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 
+import matplotlib.font_manager as fm
 _CANDIDATES = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
                "PingFang SC", "Heiti SC"]
 _available = {f.name for f in fm.fontManager.ttflist}
 _chosen = next((n for n in _CANDIDATES if n in _available), None)
 if _chosen:
-    plt.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
-    plt.rcParams["font.family"] = "sans-serif"
-plt.rcParams["axes.unicode_minus"] = False
+    matplotlib.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
+    matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["axes.unicode_minus"] = False
+
+import matplotlib.pyplot as plt
 
 # ══════════════════════════════════════════════════════════════════
 # 1. Simulate coning motion
@@ -238,8 +239,8 @@ ax.grid(True, alpha=0.3)
 
 # ── Bottom row: three snapshots showing the coning cross-product ──
 for idx, (t0, label) in enumerate([
-    (0.1, "早期 — dθ₁×dθ₂ 小"),
-    (0.3, "中期 — dθ₁×dθ₂ 积累"),
+    (0.1, "早期 — dth1 x dth2 小"),
+    (0.3, "中期 — dth1 x dth2 积累"),
     (0.5, "后期 — 漂移明显"),
 ]):
     i0 = int(t0 / dt_fine)
@@ -254,11 +255,11 @@ for idx, (t0, label) in enumerate([
                    np.sum(wz[i1:i1+half_fine])*dt_fine])
     cross = np.cross(d1, d2)
     ax.arrow(0, 0, d1[0]*100, d1[1]*100,
-             color="blue", width=0.0002, head_width=0.0008, label="dθ₁")
+             color="blue", width=0.0002, head_width=0.0008, label="dth1")
     ax.arrow(0, 0, d2[0]*100, d2[1]*100,
-             color="green", width=0.0002, head_width=0.0008, label="dθ₂")
+             color="green", width=0.0002, head_width=0.0008, label="dth2")
     ax.arrow(0, 0, cross[0]*10000, cross[1]*10000,
-             color="red", width=0.0002, head_width=0.0008, label="dθ₁×dθ₂ ×100")
+             color="red", width=0.0002, head_width=0.0008, label="dth1 x dth2 x100")
     ax.set_xlabel("X"); ax.set_ylabel("Y")
     ax.set_title(f"{label}\n补偿项 Z = {cross[2]*1e6:.1f} µrad")
     ax.set_aspect("equal")

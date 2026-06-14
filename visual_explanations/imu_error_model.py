@@ -15,25 +15,25 @@ r"""IMU 误差模型图解。
 
 import os
 import sys
-
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import matplotlib
 matplotlib.use("Agg")
-import matplotlib.pyplot as plt
-import matplotlib.font_manager as fm
 
-# ── 中文字体 ──
+# ── 中文字体 (须在 import pyplot 之前设置 rcParams) ──
+import matplotlib.font_manager as fm
 _CANDIDATES = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
                "PingFang SC", "Heiti SC"]
 _available = {f.name for f in fm.fontManager.ttflist}
 _chosen = next((n for n in _CANDIDATES if n in _available), None)
 if _chosen:
-    plt.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
-    plt.rcParams["font.family"] = "sans-serif"
-plt.rcParams["axes.unicode_minus"] = False
+    matplotlib.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
+    matplotlib.rcParams["font.family"] = "sans-serif"
+matplotlib.rcParams["axes.unicode_minus"] = False
+
+import matplotlib.pyplot as plt
 
 # ══════════════════════════════════════════════════════════════════
 # 1. Generate demo signals
