@@ -1,289 +1,207 @@
 r"""划桨效应 (Sculling) 与旋转效应 (Rotation) 图解。
 
-划桨: 角振动 × 线振动 = 虚假的常值速度增量
-      类比 — 划桨: 手摇 (角) + 桨划水 (线) → 船向前 (常值速度)
-
-旋转: 在一个旋转周期内, 速度增量的测量方向在变化
-      简单地把起点和终点的测量平均 → 忽略了中间的旋转
+划桨: 角振动 × 线振动 → 正交方向的虚假常值速度
+旋转: dt 内 body 系旋转 → 速度增量方向变化未补偿
 
 运行: python visual_explanations/sculling_rotation_error.py
 输出: visual_explanations/outputs/sculling_rotation_error.png
 """
 
-import os
-import sys
+import os, sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import matplotlib
 matplotlib.use("Agg")
-
 import matplotlib.font_manager as fm
 _CANDIDATES = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
                "PingFang SC", "Heiti SC"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_chosen = next((n for n in _CANDIDATES if n in _available), None)
-if _chosen:
-    matplotlib.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
+_avail = {f.name for f in fm.fontManager.ttflist}
+_ch = next((n for n in _CANDIDATES if n in _avail), None)
+if _ch:
+    matplotlib.rcParams["font.sans-serif"] = [_ch, "DejaVu Sans"]
     matplotlib.rcParams["font.family"] = "sans-serif"
 matplotlib.rcParams["axes.unicode_minus"] = False
-
 import matplotlib.pyplot as plt
 
-# ══════════════════════════════════════════════════════════════════
-# 1. Sculling Simulation
-# ══════════════════════════════════════════════════════════════════
+# ── simulation ───────────────────────────────────────────────────
+# sculling: X-axis angular oscillation + Z-axis linear oscillation
+#   → produces Y-axis net velocity (dth_x × dv_z = Y direction)
+# rotation: total rotation during dt changes direction of dv
 
-T_total = 1.0
-dt_fine = 0.0001
-nav_T = 0.01
-omega_freq = 5.0
-amplitude_angle = 0.02   # angular oscillation amp  [rad], ~1.15°
-amplitude_vel = 0.05     # velocity oscillation amp [m/s]
+T, dt_fine, nav_T = 1.0, 0.0001, 0.01
+omega = 10.0          # 10 Hz vibration (clearly visible)
+amp_ang = 0.05        # angular amp [rad] ≈ 2.9°
+amp_vel = 0.5         # velocity amp [m/s] (larger for visible effect)
 
-t_fine = np.arange(0, T_total, dt_fine)
-n_fine = len(t_fine)
+t = np.arange(0, T, dt_fine)
+n_fine = len(t)
 
-# Generate angular oscillation + linear oscillation
-wx = amplitude_angle * omega_freq * np.cos(omega_freq * t_fine)
-wy = np.zeros_like(t_fine)
-wz = np.zeros_like(t_fine)
+# X-axis angular oscillation
+wx = amp_ang * omega * np.cos(omega * t)
+wy = np.zeros_like(t)
+wz = np.zeros_like(t)
 
-ax_body = amplitude_vel * omega_freq * np.cos(omega_freq * t_fine + np.pi/2)
-ay = np.zeros_like(t_fine)
-az = np.zeros_like(t_fine)
+# Z-axis linear oscillation (90° phase → max sculling)
+az = amp_vel * omega * np.cos(omega * t + np.pi/2)
+ax = np.zeros_like(t)
+ay = np.zeros_like(t)
 
-# True velocity (integrate at fine step, accounting for rotation during dt)
-v_true = np.array([0.0, 0.0, 0.0])      # [vx, vy, vz], start at 0
+# Truth: integrate at fine dt, account for body rotation
+theta_x = np.cumsum(wx) * dt_fine
+v_true = np.zeros(3)
 v_true_hist = np.zeros((n_fine, 3))
-
-# Body-frame attitude (simple integration for truth)
-theta_x = np.cumsum(wx) * dt_fine       # accumulate angle about X
 for i in range(n_fine):
-    # Velocity increment in body frame at this instant
-    dv_body = np.array([ax_body[i], ay[i], az[i]]) * dt_fine
-    # Rotate to inertial frame (simple small-angle transformation)
-    sin_tx = np.sin(theta_x[i])
-    cos_tx = np.cos(theta_x[i])
-    # The body frame rotated about X by theta_x[i]
-    # y and z components get mixed
-    dv_nav = np.array([
-        dv_body[0],
-        cos_tx * dv_body[1] - sin_tx * dv_body[2],
-        sin_tx * dv_body[1] + cos_tx * dv_body[2],
-    ])
+    dv_body = np.array([ax[i], ay[i], az[i]]) * dt_fine
+    ct, st = np.cos(theta_x[i]), np.sin(theta_x[i])
+    dv_nav = np.array([dv_body[0],
+                       ct*dv_body[1] - st*dv_body[2],
+                       st*dv_body[1] + ct*dv_body[2]])
     v_true += dv_nav
     v_true_hist[i] = v_true
 
-# Now simulate navigation at 100 Hz
-nav_steps = int(T_total / nav_T)
-fine_per_nav = int(nav_T / dt_fine)
-half_fine = fine_per_nav // 2
+# navigation at 100 Hz
+steps = int(T / nav_T)
+fpn = int(nav_T / dt_fine)
+hf = fpn // 2
 
-v_single = np.array([0.0, 0.0, 0.0])
-v_double = np.array([0.0, 0.0, 0.0])
+v_single = np.zeros(3)
+v_double = np.zeros(3)
+s_hist = np.zeros((steps, 3))
+d_hist = np.zeros((steps, 3))
+vt_hist = np.zeros((steps, 3))
 
-# Use simple frame (no rotation about X axis), focus on sculling in Y
-single_hist = np.zeros((nav_steps, 3))
-double_hist = np.zeros((nav_steps, 3))
-true_at_nav = np.zeros((nav_steps, 3))
+for k in range(steps):
+    i0 = k * fpn
 
-for k in range(nav_steps):
-    i0 = k * fine_per_nav
+    dth_t = np.array([np.sum(wx[i0:i0+fpn])*dt_fine, 0., 0.])
+    dv_t  = np.array([0., 0., np.sum(az[i0:i0+fpn])*dt_fine])
 
-    # Total angular + velocity increments over epoch
-    dtheta_total = np.array([
-        np.sum(wx[i0:i0+fine_per_nav]) * dt_fine,
-        np.sum(wy[i0:i0+fine_per_nav]) * dt_fine,
-        np.sum(wz[i0:i0+fine_per_nav]) * dt_fine,
-    ])
-    dvel_total = np.array([
-        np.sum(ax_body[i0:i0+fine_per_nav]) * dt_fine,
-        np.sum(ay[i0:i0+fine_per_nav]) * dt_fine,
-        np.sum(az[i0:i0+fine_per_nav]) * dt_fine,
-    ])
+    # single
+    v_single += dv_t
 
-    # --- Single-sample ---
-    v_single += dvel_total
+    # two-sample
+    dth1 = np.array([np.sum(wx[i0:i0+hf])*dt_fine, 0., 0.])
+    dth2 = np.array([np.sum(wx[i0+hf:i0+fpn])*dt_fine, 0., 0.])
+    dv1  = np.array([0., 0., np.sum(az[i0:i0+hf])*dt_fine])
+    dv2  = np.array([0., 0., np.sum(az[i0+hf:i0+fpn])*dt_fine])
 
-    # --- Two-sample ---
-    dtheta1 = np.array([
-        np.sum(wx[i0:i0+half_fine]) * dt_fine,
-        np.sum(wy[i0:i0+half_fine]) * dt_fine,
-        np.sum(wz[i0:i0+half_fine]) * dt_fine,
-    ])
-    dtheta2 = np.array([
-        np.sum(wx[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-        np.sum(wy[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-        np.sum(wz[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-    ])
-    dvel1 = np.array([
-        np.sum(ax_body[i0:i0+half_fine]) * dt_fine,
-        np.sum(ay[i0:i0+half_fine]) * dt_fine,
-        np.sum(az[i0:i0+half_fine]) * dt_fine,
-    ])
-    dvel2 = np.array([
-        np.sum(ax_body[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-        np.sum(ay[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-        np.sum(az[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-    ])
+    scul = (2./3.)*(np.cross(dth1, dv2) + np.cross(dv1, dth2))
+    rot  = 0.5 * np.cross(dth_t, dv_t)
+    v_double += dv_t + scul + rot
 
-    # Sculling compensation
-    dvel_scul = (2.0/3.0) * (np.cross(dtheta1, dvel2) + np.cross(dvel1, dtheta2))
-    # Rotation effect compensation
-    dvel_rot = 0.5 * np.cross(dtheta_total, dvel_total)
-    dvel_2s = dvel_total + dvel_scul + dvel_rot
+    s_hist[k] = v_single
+    d_hist[k] = v_double
+    vt_hist[k] = v_true_hist[i0]
 
-    v_double += dvel_2s
+# Sculling produces Y-axis velocity (dth_x × dv_z → Y)
+tn = np.arange(steps) * nav_T
+err_s = (s_hist[:, 1] - vt_hist[:, 1]) * 1000   # mm/s
+err_d = (d_hist[:, 1] - vt_hist[:, 1]) * 1000
 
-    single_hist[k] = v_single
-    double_hist[k] = v_double
-    true_at_nav[k] = v_true_hist[i0]
+# cross-product diagnostics
+scul_y = np.zeros(steps)
+rot_y = np.zeros(steps)
+for k in range(steps):
+    i0 = k*fpn
+    dth1 = np.array([np.sum(wx[i0:i0+hf])*dt_fine, 0., 0.])
+    dth2 = np.array([np.sum(wx[i0+hf:i0+fpn])*dt_fine, 0., 0.])
+    dv1  = np.array([0., 0., np.sum(az[i0:i0+hf])*dt_fine])
+    dv2  = np.array([0., 0., np.sum(az[i0+hf:i0+fpn])*dt_fine])
+    dth_t = dth1+dth2; dv_t = dv1+dv2
+    scul_y[k] = (2./3.)*(np.cross(dth1, dv2)+np.cross(dv1, dth2))[1]*1000
+    rot_y[k]  = 0.5*np.cross(dth_t, dv_t)[1]*1000
 
-# ══════════════════════════════════════════════════════════════════
-# 2. Plot
-# ══════════════════════════════════════════════════════════════════
+# ── 2x3 layout ───────────────────────────────────────────────────
 
-t_nav = np.arange(nav_steps) * nav_T
-fig = plt.figure(figsize=(18, 13))
-gs = fig.add_gridspec(3, 3, hspace=0.45, wspace=0.35)
+fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+((ax0, ax1, ax2), (ax3, ax4, ax5)) = axes
 
-# ── (0,0): Sculling physical analogy ──
-ax = fig.add_subplot(gs[0, 0])
-# Draw a simple boat + oar cartoon
-theta = np.linspace(-0.3, 0.3, 20)
-boat_x = np.array([-0.2, 0.2])
-ax.plot(boat_x, [0, 0], "k-", linewidth=3, label="船体")
-ax.arrow(-0.15, 0, 0, 0.25, color="green", width=0.01, head_width=0.03, label="手摇 (角)")
-ax.arrow(-0.15, 0.25, 0.25, 0, color="blue", width=0.005, head_width=0.02, label="桨划 (线)")
-ax.arrow(0.1, 0.05, 0.4, 0, color="red", width=0.005, head_width=0.02, label="船前进 (常值速度)")
-for spine in ax.spines.values():
-    spine.set_visible(False)
-ax.set_xticks([]); ax.set_yticks([])
-ax.set_xlim(-0.5, 0.8); ax.set_ylim(-0.1, 0.4)
-ax.set_title("划桨效应 — 物理类比:\n手摇(角) + 桨划水(线) → 船前进(常值速度)", fontsize=9)
-ax.legend(fontsize=6, loc="lower right", ncol=1)
+# (0,0) ω_x and a_z signals
+ax = ax0
+t_show = t[:2000]
+ax2_ = ax.twinx()
+ax.plot(t_show, wx[:2000]*57.3, "red", lw=0.8, label="ω_x (角速度)")
+ax2_.plot(t_show, az[:2000], "blue", lw=0.8, label="a_z (线加速度)")
+ax.set_xlabel("时间 [s]"); ax.set_ylabel("角速度 [°/s]", color="red")
+ax2_.set_ylabel("加速度 [m/s²]", color="blue")
+ax.set_title("X 轴角振动 + Z 轴线振动", fontsize=10)
 
-# ── (0,1): ω_x and a_y vs time ──
-ax = fig.add_subplot(gs[0, 1])
-ax2 = ax.twinx()
-ax.plot(t_fine[:3000], wx[:3000] * 57.3, "red", linewidth=0.8, label="ω_x (角速度)")
-ax2.plot(t_fine[:3000], ax_body[:3000], "blue", linewidth=0.8, label="a_y (线加速度)")
-ax.set_xlabel("时间 [s]")
-ax.set_ylabel("角速度 [°/s]", color="red")
-ax2.set_ylabel("加速度 [m/s²]", color="blue")
-ax.set_title("角振动 (X 轴) + 线振动 (Y 轴)\n同频率, 90° 相位差 → 最大划桨效应")
-
-# ── (0,2): Cross-product surface ──
-t_show = np.arange(0, 0.5, nav_T)
-cross_vals = []
-for t0 in t_show:
-    i0 = int(t0 / dt_fine)
-    i1 = i0 + half_fine
-    d1 = np.array([np.sum(wx[i0:i1])*dt_fine, 0.0, 0.0])
-    d2 = np.array([np.sum(wx[i1:i1+half_fine])*dt_fine, 0.0, 0.0])
-    dv1 = np.array([0.0, np.sum(ay[i0:i1])*dt_fine, 0.0])
-    dv2 = np.array([0.0, np.sum(ay[i1:i1+half_fine])*dt_fine, 0.0])
-    scul = (2/3)*(np.cross(d1, dv2) + np.cross(dv1, d2))
-    cross_vals.append(scul[2])  # Z component of sculling
-
-ax = fig.add_subplot(gs[0, 2])
-ax.bar(range(len(t_show)), np.array(cross_vals)*1e6, color="purple", alpha=0.7)
-ax.set_xlabel("导航历元"); ax.set_ylabel("划桨补偿项 Z [µm/s]")
-ax.set_title("每历元划桨补偿项 (dv_scul)_z", fontsize=9)
-ax.text(0.5, -0.35, "叉积 dv1 x dth2 + dth1 x dv2 → Z 方向虚假速度",
-        transform=ax.transAxes, ha="center", fontsize=6.5, color="gray")
-ax.grid(axis="y", alpha=0.3)
-
-# ── (1,:): Velocity error comparison ──
-ax = fig.add_subplot(gs[1, :])
-# Only Y-axis has sculling effect (X oscillation → Y velocity)
-vel_error_single_y = (single_hist[:, 1] - true_at_nav[:, 1]) * 100  # cm/s
-vel_error_double_y = (double_hist[:, 1] - true_at_nav[:, 1]) * 100
-ax.plot(t_nav, vel_error_single_y, "gray", linewidth=1.2,
-        label="单子样 (不补偿) — 速度累积偏差")
-ax.axhline(y=0, color="gray", linestyle=":", linewidth=0.5)
-ax.plot(t_nav, vel_error_double_y, "r", linewidth=1.2,
-        label="双子样 (划桨+旋转补偿后) — 几乎无偏差")
-ax.fill_between(t_nav, 0, vel_error_single_y, alpha=0.1, color="gray")
-ax.set_xlabel("时间 [s]"); ax.set_ylabel("Y 轴速度误差 [cm/s]")
-ax.set_title(
-    f"划桨效应 → Y 轴速度误差 (X角振幅{amplitude_angle*57.3:.1f}° + Y线振幅{amplitude_vel:.2f}m/s² @ {omega_freq}Hz)\n"
-    "仅有 X 角振动 + Y 线振动, 单子样 cm/s 级偏差 vs 双子样消除"
-)
-ax.legend(fontsize=9)
-ax.grid(True, alpha=0.3)
-
-# ── (2,0): Per-epoch compensation breakdown ──
-epoch_show = 20
-scul_z = np.zeros(epoch_show)
-rot_z = np.zeros(epoch_show)
-for k in range(epoch_show):
-    i0 = k * fine_per_nav
-    dtheta_total = np.array([np.sum(wx[i0:i0+fine_per_nav])*dt_fine, 0., 0.])
-    dvel_total = np.array([0., np.sum(ay[i0:i0+fine_per_nav])*dt_fine, 0.])
-    dtheta1 = np.array([np.sum(wx[i0:i0+half_fine])*dt_fine, 0., 0.])
-    dtheta2 = np.array([np.sum(wx[i0+half_fine:i0+fine_per_nav])*dt_fine, 0., 0.])
-    dvel1 = np.array([0., np.sum(ay[i0:i0+half_fine])*dt_fine, 0.])
-    dvel2 = np.array([0., np.sum(ay[i0+half_fine:i0+fine_per_nav])*dt_fine, 0.])
-    scul = (2/3)*(np.cross(dtheta1, dvel2) + np.cross(dvel1, dtheta2))
-    rot = 0.5 * np.cross(dtheta_total, dvel_total)
-    scul_z[k] = scul[2] * 1e9
-    rot_z[k] = rot[2] * 1e9
-
-ax = fig.add_subplot(gs[2, 0])
-x_idx = np.arange(epoch_show)
+# (0,1) Sculling comp per epoch (mm/s scale)
+ax = ax1
+x_idx = np.arange(min(30, steps))
 w = 0.35
-ax.bar(x_idx - w/2, scul_z, w, color="purple", alpha=0.7, label="划桨 (2/3)(dth1 x dv2 + dv1 x dth2)")
-ax.bar(x_idx + w/2, rot_z, w, color="orange", alpha=0.7, label="旋转 (1/2)(dθ×dv)")
-ax.set_xlabel("导航历元"); ax.set_ylabel("补偿量 [nm/s]")
-ax.set_title("每历元划桨 vs 旋转补偿量", fontsize=9)
-ax.legend(fontsize=6)
-ax.grid(axis="y", alpha=0.3)
+ax.bar(x_idx-w/2, scul_y[:30], w, color="purple", alpha=0.7, label="划桨 (2/3)(dth1×dv2+dv1×dth2)")
+ax.bar(x_idx+w/2, rot_y[:30], w, color="orange", alpha=0.7, label="旋转 (1/2)(dth×dv)")
+ax.set_xlabel("导航历元"); ax.set_ylabel("补偿量 Y [mm/s]")
+ax.set_title("每历元划桨 vs 旋转补偿量", fontsize=10)
+ax.legend(fontsize=6); ax.grid(axis="y", alpha=0.3)
 
-# ── (2,1): Rotation effect explanation ──
-ax = fig.add_subplot(gs[2, 1])
-# Draw a rotating frame illustration
-theta_rot = np.linspace(0, np.pi/4, 50)
+# (0,2) Physical explanation
+ax = ax2
+ax.axis("off")
+msg = (
+    "划桨效应 — 物理类比\n\n"
+    "手摇船桨 (角振动)\n"
+    "桨片划水 (线振动)\n"
+    "→ 船获得常值前进速度\n\n"
+    "数学: dth_x × dv_z → Y 方向速度\n\n"
+    f"角振幅: {amp_ang*57.3:.1f}°\n"
+    f"线振幅: {amp_vel:.2f} m/s²\n"
+    f"频率: {omega} Hz"
+)
+ax.text(0.05, 0.95, msg, transform=ax.transAxes, fontsize=9,
+        va="top",
+        bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8))
+
+# (1,0) Velocity error — Y axis
+ax = ax3
+ax.plot(tn, err_s, "gray", lw=1.2, label="单子样 (不补偿)")
+ax.plot(tn, err_d, "r", lw=1.2, label="双子样 (划桨+旋转补偿)")
+ax.axhline(0, color="gray", ls=":", lw=0.5)
+ax.set_xlabel("时间 [s]"); ax.set_ylabel("Y 轴速度误差 [mm/s]")
+ax.set_title("划桨 → Y 轴速度误差", fontsize=10)
+ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+# (1,1) Position drift (integrate velocity error)
+ax = ax4
+pos_s = np.cumsum(err_s) * nav_T * 1e-3   # m
+pos_d = np.cumsum(err_d) * nav_T * 1e-3
+ax.plot(tn, pos_s*1000, "gray", lw=1.2, label="单子样")
+ax.plot(tn, pos_d*1000, "r", lw=1.2, label="双子样")
+ax.set_xlabel("时间 [s]"); ax.set_ylabel("Y 位置漂移 [mm]")
+ax.set_title("位置漂移 (速度误差积分)", fontsize=10)
+ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+
+# (1,2) Rotation effect diagram
+ax = ax5
+theta_demo = np.linspace(0, np.pi/6, 50)
 r = 0.3
-x_circle = r * np.cos(theta_rot)
-y_circle = r * np.sin(theta_rot)
-ax.plot(x_circle, y_circle, "gray", linewidth=0.8, linestyle="--")
-ax.arrow(0.5, 0, 0, 0, color="blue", width=0.005, head_width=0.012, label="起点 body 系")
-ax.arrow(0.44, 0.12, 0.02, 0.08, color="red", width=0.005, head_width=0.012,
-         label="途中 body 系 (在转!)")
-# Frame axes at start
-ax.arrow(0.5, 0, 0.1, 0, color="black", width=0.003)
-ax.arrow(0.5, 0, 0, 0.1, color="black", width=0.003)
-# Frame axes at mid-rotation
-mid_x, mid_y = 0.44, 0.12
-ax.arrow(mid_x, mid_y, 0.08, 0.04, color="gray", width=0.003)
-ax.arrow(mid_x, mid_y, -0.02, 0.08, color="gray", width=0.003)
-ax.set_xlim(0.2, 0.7); ax.set_ylim(-0.1, 0.4)
-ax.set_aspect("equal")
-for spine in ax.spines.values(): spine.set_visible(False)
+ax.plot(r*np.cos(theta_demo), r*np.sin(theta_demo), "gray", lw=0.8, ls="--")
+# body frame at start
+ax.arrow(0.55, 0, 0.12, 0, color="black", width=0.003, head_width=0.008)
+ax.arrow(0.55, 0, 0, 0.12, color="black", width=0.003, head_width=0.008)
+ax.text(0.70, 0.03, "body(t)", fontsize=7)
+# body frame mid
+cx, cy = 0.52, 0.06
+ax.arrow(cx, cy, 0.10, 0.03, color="gray", width=0.003, head_width=0.008)
+ax.arrow(cx, cy, -0.01, 0.11, color="gray", width=0.003, head_width=0.008)
+ax.text(cx+0.08, cy+0.03, "body(t+dt/2)", fontsize=7, color="gray")
+# dv arrow
+ax.arrow(0.55, -0.05, -0.05, 0.15, color="red", width=0.004, head_width=0.012, length_includes_head=True)
+ax.text(0.40, 0.10, "dv 方向在变!", fontsize=7, color="red")
+ax.set_xlim(0.3, 0.8); ax.set_ylim(-0.1, 0.3)
+for sp in ax.spines.values(): sp.set_visible(False)
 ax.set_xticks([]); ax.set_yticks([])
-ax.set_title("旋转效应: body系在dt内旋转\n速度增量方向变化, 简单相加忽略此变化", fontsize=8)
-ax.legend(fontsize=7)
+ax.set_aspect("equal")
+ax.set_title("旋转效应: body系在dt内旋转", fontsize=10)
 
-# ── (2,2): Position error accumulation ──
-ax = fig.add_subplot(gs[2, 2])
-pos_single_y = np.cumsum(single_hist[:, 1]) * nav_T * 100  # cm
-pos_double_y = np.cumsum(double_hist[:, 1]) * nav_T * 100
-pos_true_y = np.cumsum(true_at_nav[:, 1]) * nav_T * 100
-ax.plot(t_nav, (pos_single_y - pos_true_y), "gray", linewidth=1.2, label="单子样")
-ax.plot(t_nav, (pos_double_y - pos_true_y), "r", linewidth=1.2, label="双子样")
-ax.set_xlabel("时间 [s]"); ax.set_ylabel("Y 位置误差 [cm]")
-ax.set_title("位置漂移 (速度误差的积分)\n1 秒内单子样漂 ~cm 级, 双子样几乎零")
-ax.legend(fontsize=8)
-ax.grid(True, alpha=0.3)
+fig.suptitle("划桨效应 (Sculling) 与旋转效应 (Rotation): 角振动 × 线振动 → 虚假常值速度",
+             fontsize=13, fontweight="bold", y=0.98)
+fig.tight_layout(rect=[0, 0, 1, 0.95])
 
-fig.suptitle("划桨效应 (Sculling) 与旋转效应 (Rotation): 角振动 × 线振动 → 虚假的常值速度",
-             fontsize=14, fontweight="bold", y=0.98)
-
-out = os.path.join(os.path.dirname(__file__), "outputs",
-                   "sculling_rotation_error.png")
+out = os.path.join(os.path.dirname(__file__), "outputs", "sculling_rotation_error.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 fig.savefig(out, dpi=150, bbox_inches="tight")
 print(f"Saved: {os.path.abspath(out)}")

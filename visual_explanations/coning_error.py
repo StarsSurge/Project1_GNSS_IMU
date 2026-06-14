@@ -1,274 +1,171 @@
 r"""圆锥效应 (Coning) 图解。
 
-当两个正交轴 (X,Y) 上存在同频率角振动时,
-第三轴 (Z) 会产生一个净旋转 —— 即使 Z 轴没有净角速度。
-
-模拟: 绕 X 轴振摆动 + 绕 Y 轴振摆动
-      → 计算真实姿态演化 (用连续四元数积分, 细微步长)
-      → 对比单子样 (简单相加) 和双子样 (叉积补偿) 的效果
+X-Y 轴同频率角振动 → Z 轴产生净旋转 (即使 Z 角速度=0)。
 
 运行: python visual_explanations/coning_error.py
 输出: visual_explanations/outputs/coning_error.png
 """
 
-import os
-import sys
+import os, sys
 import numpy as np
 
 sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
 
 import matplotlib
 matplotlib.use("Agg")
-
 import matplotlib.font_manager as fm
 _CANDIDATES = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
                "PingFang SC", "Heiti SC"]
-_available = {f.name for f in fm.fontManager.ttflist}
-_chosen = next((n for n in _CANDIDATES if n in _available), None)
-if _chosen:
-    matplotlib.rcParams["font.sans-serif"] = [_chosen, "DejaVu Sans"]
+_avail = {f.name for f in fm.fontManager.ttflist}
+_ch = next((n for n in _CANDIDATES if n in _avail), None)
+if _ch:
+    matplotlib.rcParams["font.sans-serif"] = [_ch, "DejaVu Sans"]
     matplotlib.rcParams["font.family"] = "sans-serif"
 matplotlib.rcParams["axes.unicode_minus"] = False
-
 import matplotlib.pyplot as plt
 
-# ══════════════════════════════════════════════════════════════════
-# 1. Simulate coning motion
-# ══════════════════════════════════════════════════════════════════
+# ── simulation ───────────────────────────────────────────────────
 
-def quat_multiply(q1, q2):
-    w1, x1, y1, z1 = q1
-    w2, x2, y2, z2 = q2
-    return np.array([
-        w1*w2 - x1*x2 - y1*y2 - z1*z2,
-        w1*x2 + x1*w2 + y1*z2 - z1*y2,
-        w1*y2 - x1*z2 + y1*w2 + z1*x2,
-        w1*z2 + x1*y2 - y1*x2 + z1*w2,
-    ])
+def quat_mul(q1, q2):
+    w1,x1,y1,z1 = q1; w2,x2,y2,z2 = q2
+    return np.array([w1*w2-x1*x2-y1*y2-z1*z2,
+                     w1*x2+x1*w2+y1*z2-z1*y2,
+                     w1*y2-x1*z2+y1*w2+z1*x2,
+                     w1*z2+x1*y2-y1*x2+z1*w2])
 
-def axis_angle_to_quat(axis, angle):
-    axis = np.asarray(axis)
-    n = np.linalg.norm(axis)
-    if n < 1e-15:
-        return np.array([1.0, 0.0, 0.0, 0.0])
-    u = axis / n
-    half = angle * 0.5
-    return np.array([np.cos(half), u[0]*np.sin(half),
-                     u[1]*np.sin(half), u[2]*np.sin(half)])
+def aa2quat(axis, angle):
+    axis = np.asarray(axis); n = np.linalg.norm(axis)
+    if n < 1e-15: return np.array([1.,0.,0.,0.])
+    u = axis/n; h = angle*0.5
+    return np.array([np.cos(h), u[0]*np.sin(h), u[1]*np.sin(h), u[2]*np.sin(h)])
 
-def quat_to_euler_zxy(q):
-    """Quaternion → Roll(X), Pitch(Y), Yaw(Z) [rad], ZXY order for clarity."""
-    w, x, y, z = q
-    # Roll (X)
-    sinr = 2*(w*x + y*z)
-    cosr = 1 - 2*(x*x + y*y)
-    roll = np.arctan2(sinr, cosr)
-    # Pitch (Y)
-    sinp = 2*(w*y - z*x)
-    sinp = np.clip(sinp, -1.0, 1.0)
-    pitch = np.arcsin(sinp)
-    # Yaw (Z)
-    siny = 2*(w*z + x*y)
-    cosy = 1 - 2*(y*y + z*z)
-    yaw = np.arctan2(siny, cosy)
-    return roll, pitch, yaw
+def q2yaw(q):
+    w,x,y,z = q
+    return np.arctan2(2*(w*z+x*y), 1-2*(y*y+z*z))
 
-# Parameters
-T_total = 2.0           # 2 seconds
-dt_fine = 0.0001        # 0.1ms for "truth" (fine integration)
-nav_T = 0.01            # 10ms navigation epoch (100 Hz)
-omega_freq = 5.0        # 5 Hz vibration frequency
-amplitude = 0.02        # 2e-2 rad amplitude on each axis (~1.15°)
+T, dt_fine, nav_T = 2.0, 0.0001, 0.01
+omega, amp = 5.0, 0.02
+t = np.arange(0, T, dt_fine); n = len(t)
 
-t_fine = np.arange(0, T_total, dt_fine)
-n_fine = len(t_fine)
+wx = amp*omega*np.cos(omega*t)
+wy = amp*omega*np.cos(omega*t + np.pi/2)
+wz = np.zeros_like(t)
 
-# Generate time-varying angular velocity (coning motion):
-#   ω_x(t) = A·ω·cos(ωt)           →  angle on X oscillates at ω
-#   ω_y(t) = A·ω·cos(ωt + φ)       →  angle on Y oscillates at ω, with phase φ
-#   ω_z(t) = 0                       →  no explicit Z rotation
-#
-# But: cos(ωt) × cos(ωt+φ) ≠ 0 → net rotation about Z!
+# truth (fine integration)
+q_true = np.array([1.,0.,0.,0.])
+q_hist = np.zeros((n,4))
+for i in range(n):
+    dth = np.array([wx[i], wy[i], wz[i]])*dt_fine
+    ang = np.linalg.norm(dth)
+    dq = aa2quat(dth/ang, ang) if ang>1e-15 else np.array([1.,0.,0.,0.])
+    q_true = quat_mul(q_true, dq); q_true/=np.linalg.norm(q_true)
+    q_hist[i] = q_true
 
-phi = np.pi / 2   # 90° phase → maximum coning effect
+# navigation at 100 Hz
+steps = int(T/nav_T); fpn = int(nav_T/dt_fine); hf = fpn//2
+q1 = np.array([1.,0.,0.,0.]); q2 = np.array([1.,0.,0.,0.])
+y1 = np.zeros(steps); y2 = np.zeros(steps); yt = np.zeros(steps)
 
-# Compute angular velocity at each fine step
-wx = amplitude * omega_freq * np.cos(omega_freq * t_fine)
-wy = amplitude * omega_freq * np.cos(omega_freq * t_fine + phi)
-wz = np.zeros_like(t_fine)
+for k in range(steps):
+    i0 = k*fpn
+    dth_t = np.array([np.sum(wx[i0:i0+fpn])*dt_fine,
+                      np.sum(wy[i0:i0+fpn])*dt_fine,
+                      np.sum(wz[i0:i0+fpn])*dt_fine])
 
-# Truth: integrate quaternion at fine step (0.1ms) — treat as "true" rotation
-q_true = np.array([1.0, 0.0, 0.0, 0.0])
-q_true_hist = np.zeros((n_fine, 4))
-for i in range(n_fine):
-    dtheta = np.array([wx[i], wy[i], wz[i]]) * dt_fine
-    angle = np.linalg.norm(dtheta)
-    if angle > 1e-15:
-        dq = axis_angle_to_quat(dtheta / angle, angle)
-    else:
-        dq = np.array([1.0, 0.0, 0.0, 0.0])
-    q_true = quat_multiply(q_true, dq)
-    q_true /= np.linalg.norm(q_true)
-    q_true_hist[i] = q_true
+    # single-sample
+    a = np.linalg.norm(dth_t)
+    dq = aa2quat(dth_t/a, a) if a>1e-15 else np.array([1.,0.,0.,0.])
+    q1 = quat_mul(q1, dq); q1/=np.linalg.norm(q1); y1[k] = q2yaw(q1)
 
-# Now simulate navigation at 100 Hz using single-sample and two-sample
-nav_steps = int(T_total / nav_T)
-fine_per_nav = int(nav_T / dt_fine)  # 100 fine steps per nav epoch
-half_fine = fine_per_nav // 2
+    # two-sample with coning comp
+    dth1 = np.array([np.sum(wx[i0:i0+hf])*dt_fine, np.sum(wy[i0:i0+hf])*dt_fine, 0.])
+    dth2 = np.array([np.sum(wx[i0+hf:i0+fpn])*dt_fine, np.sum(wy[i0+hf:i0+fpn])*dt_fine, 0.])
+    dth_2 = dth1+dth2 + (2./3.)*np.cross(dth1, dth2)
+    a = np.linalg.norm(dth_2)
+    dq = aa2quat(dth_2/a, a) if a>1e-15 else np.array([1.,0.,0.,0.])
+    q2 = quat_mul(q2, dq); q2/=np.linalg.norm(q2); y2[k] = q2yaw(q2)
 
-# Single-sample: just use the total angular increment over the epoch
-# Two-sample: split into two halves, apply coning compensation
+    yt[k] = q2yaw(q_hist[i0])
 
-q_single = np.array([1.0, 0.0, 0.0, 0.0])
-q_double = np.array([1.0, 0.0, 0.0, 0.0])
+tn = np.arange(steps)*nav_T
+err1 = np.rad2deg(y1 - yt)*3600    # deg/h
+err2 = np.rad2deg(y2 - yt)*3600
 
-single_yaw = np.zeros(nav_steps)
-double_yaw = np.zeros(nav_steps)
-true_yaw_at_nav = np.zeros(nav_steps)
+# cross-product diagnostics
+cross_z = np.zeros(steps)
+for k in range(steps):
+    i0 = k*fpn
+    d1 = np.array([np.sum(wx[i0:i0+hf])*dt_fine, np.sum(wy[i0:i0+hf])*dt_fine, 0.])
+    d2 = np.array([np.sum(wx[i0+hf:i0+fpn])*dt_fine, np.sum(wy[i0+hf:i0+fpn])*dt_fine, 0.])
+    cross_z[k] = np.cross(d1, d2)[2]*1e6  # urad
 
-for k in range(nav_steps):
-    i0 = k * fine_per_nav
+# ── 2x3 layout, no 3D ────────────────────────────────────────────
 
-    # Get the actual angular increments over this nav epoch
-    dtheta_total = np.array([
-        np.sum(wx[i0:i0+fine_per_nav]) * dt_fine,
-        np.sum(wy[i0:i0+fine_per_nav]) * dt_fine,
-        np.sum(wz[i0:i0+fine_per_nav]) * dt_fine,
-    ])
+fig, axes = plt.subplots(2, 3, figsize=(18, 10))
+((ax0, ax1, ax2), (ax3, ax4, ax5)) = axes
 
-    # --- Single-sample ---
-    angle = np.linalg.norm(dtheta_total)
-    if angle > 1e-15:
-        dq_s = axis_angle_to_quat(dtheta_total / angle, angle)
-    else:
-        dq_s = np.array([1.0, 0.0, 0.0, 0.0])
-    q_single = quat_multiply(q_single, dq_s)
-    q_single /= np.linalg.norm(q_single)
-    _, _, yaw_s = quat_to_euler_zxy(q_single)
-    single_yaw[k] = yaw_s
+# (0,0) Phase diagram
+ax = ax0
+ax.plot(np.sin(omega*t[:3000]), np.cos(omega*t[:3000]+np.pi/2), "b-", lw=0.8)
+ax.set_xlabel("X 轴角度 (归一化)"); ax.set_ylabel("Y 轴角度 (归一化)")
+ax.set_title("X-Y 角振动轨迹 (圆形 → 圆锥运动)", fontsize=10)
+ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
 
-    # --- Two-sample (subsample 1 & 2) ---
-    dtheta1 = np.array([
-        np.sum(wx[i0:i0+half_fine]) * dt_fine,
-        np.sum(wy[i0:i0+half_fine]) * dt_fine,
-        np.sum(wz[i0:i0+half_fine]) * dt_fine,
-    ])
-    dtheta2 = np.array([
-        np.sum(wx[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-        np.sum(wy[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-        np.sum(wz[i0+half_fine:i0+fine_per_nav]) * dt_fine,
-    ])
+# (0,1) ω_x vs ω_y scatter
+ax = ax1
+skip=30
+ax.scatter(wx[::skip]*57.3, wy[::skip]*57.3, c=t[::skip], s=2, alpha=0.6, cmap="coolwarm")
+ax.set_xlabel("ω_x [°/s]"); ax.set_ylabel("ω_y [°/s]")
+ax.set_title("角速度相图 (同频正交 → 叉积≠0)", fontsize=10)
+ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
 
-    # Coning compensation
-    dtheta_2s = dtheta1 + dtheta2 + (2.0/3.0) * np.cross(dtheta1, dtheta2)
+# (0,2) Cross-product per epoch
+ax = ax2
+ax.bar(range(min(30, steps)), cross_z[:30], color="purple", alpha=0.7)
+ax.set_xlabel("导航历元"); ax.set_ylabel("dth1 x dth2 的 Z 分量 [µrad]")
+ax.set_title("每历元圆锥叉积项 (dth1 x dth2)_z", fontsize=10)
+ax.grid(axis="y", alpha=0.3)
 
-    angle = np.linalg.norm(dtheta_2s)
-    if angle > 1e-15:
-        dq_d = axis_angle_to_quat(dtheta_2s / angle, angle)
-    else:
-        dq_d = np.array([1.0, 0.0, 0.0, 0.0])
-    q_double = quat_multiply(q_double, dq_d)
-    q_double /= np.linalg.norm(q_double)
-    _, _, yaw_d = quat_to_euler_zxy(q_double)
-    double_yaw[k] = yaw_d
+# (1,0) Yaw drift — span 2 cols
+ax = ax3
+ax.plot(tn, err1, "gray", lw=1.2, label="单子样 (不补偿)")
+ax.plot(tn, err2, "r", lw=1.2, label="双子样 (圆锥补偿)")
+ax.axhline(0, color="gray", ls=":", lw=0.5)
+ax.set_xlabel("时间 [s]"); ax.set_ylabel("航向误差 [°/h]")
+ax.set_title("Z 轴航向漂移 — 无 Z 输入, 仅 X-Y 角振动", fontsize=10)
+ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
-    # True yaw at this epoch
-    _, _, yaw_t = quat_to_euler_zxy(q_true_hist[i0])
-    true_yaw_at_nav[k] = yaw_t
+# (1,1) — zoom first 0.5s
+ax = ax4
+mask = tn <= 0.5
+ax.plot(tn[mask], err1[mask], "gray", lw=1.2, label="单子样")
+ax.plot(tn[mask], err2[mask], "r", lw=1.2, label="双子样")
+ax.set_xlabel("时间 [s]"); ax.set_ylabel("航向误差 [°/h]")
+ax.set_title("前 0.5s 放大", fontsize=10)
+ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
 
-# ══════════════════════════════════════════════════════════════════
-# 2. Plot
-# ══════════════════════════════════════════════════════════════════
-
-t_nav = np.arange(nav_steps) * nav_T
-yaw_rad_to_deg = np.rad2deg(1.0)
-
-fig = plt.figure(figsize=(16, 12))
-gs = fig.add_gridspec(3, 3, hspace=0.50, wspace=0.35,
-                      height_ratios=[1.0, 0.9, 0.9])
-
-# ── Top-left: phase diagram (X vs Y angle) ──
-ax = fig.add_subplot(gs[0, 0])
-ax.plot(np.sin(omega_freq * t_fine[:5000]), np.cos(omega_freq * t_fine[:5000] + phi),
-        "b-", linewidth=0.6)
-ax.set_xlabel("X 轴角度 (归一化)")
-ax.set_ylabel("Y 轴角度 (归一化)")
-ax.set_title("圆锥运动\nX-Y 角度轨迹: 圆形 → Z 有净旋转")
-ax.set_aspect("equal")
-ax.grid(True, alpha=0.3)
-
-# ── Top-middle: 3D visualization ──
-ax = fig.add_subplot(gs[0, 1], projection="3d")
-# Plot the tip of a "cone"
-n_cone = 2000
-r_cone = 0.15
-theta_cone = 2 * np.pi * omega_freq * t_fine[:n_cone]
-z_cone = np.cos(theta_cone) * r_cone
-x_cone = np.sin(theta_cone) * r_cone * 0.5   # elliptical
-y_cone = np.cos(theta_cone + phi) * r_cone * 0.5
-ax.plot(x_cone, y_cone, z_cone, "b", linewidth=0.6)
-ax.quiver(0, 0, 0, 0, 0, 0.25, color="red", linewidth=2, arrow_length_ratio=0.1)
-ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-ax.set_title("圆锥运动 3D 示意图\n红线 = Z 轴: 绕 X,Y 振荡 → Z 轴净旋转")
-ax.view_init(elev=25, azim=-45)
-
-# ── Top-right: ω_x vs ω_y ──
-ax = fig.add_subplot(gs[0, 2])
-# Sample for scatter
-skip = 50
-ax.scatter(wx[::skip], wy[::skip], c=t_fine[::skip], s=1, alpha=0.5, cmap="viridis")
-ax.set_xlabel("ω_x [rad/s]"); ax.set_ylabel("ω_y [rad/s]")
-ax.set_title("角速度相图\nω_x 和 ω_y 为同频率正弦波\n叉积 ≠ 0 → Z 轴有净旋转")
-ax.set_aspect("equal")
-ax.grid(True, alpha=0.3)
-
-# ── Middle-left: yaw drift comparison ──
-ax = fig.add_subplot(gs[1, :])
-yaw_error_single = (single_yaw - true_yaw_at_nav) * yaw_rad_to_deg
-yaw_error_double = (double_yaw - true_yaw_at_nav) * yaw_rad_to_deg
-ax.plot(t_nav, yaw_error_single * 3600, "gray", linewidth=1.2,
-        label="单子样 (不补偿) — 航向漂移 ~ °/h 级")
-ax.plot(t_nav, yaw_error_double * 3600, "r", linewidth=1.2,
-        label="双子样 (圆锥补偿后) — 几乎无漂移")
-ax.set_xlabel("时间 [s]"); ax.set_ylabel("航向角误差 [°/h]")
-ax.set_title(
-    f"Z 轴航向漂移 — 无 Z 输入, 仅 X-Y 角振动 {amplitude*57.3:.1f}° @ {omega_freq}Hz\n"
-    "单子样 °/h 级漂移 vs 双子样几乎消除"
+# (1,2) — explanation text
+ax = ax5
+ax.axis("off")
+msg = (
+    "圆锥效应 — 为什么发生?\n\n"
+    "两个正交轴上的角振动 (X 和 Y)\n"
+    "在第三个轴 (Z) 产生净旋转。\n\n"
+    f"振幅: {amp*57.3:.1f}° @ {omega} Hz\n"
+    f"最大漂移率 (单子样): {np.max(np.abs(err1)):.1f} °/h\n"
+    f"补偿后残余: {np.max(np.abs(err2)):.4f} °/h\n\n"
+    "补偿公式:\n"
+    "Δθ = Δθ1+Δθ2 + (2/3)(Δθ1×Δθ2)\n\n"
+    "系数 2/3 源于线性角速度假设\n"
+    "(Savage, Strapdown Analytics)"
 )
-ax.legend(fontsize=9)
-ax.grid(True, alpha=0.3)
-
-# ── Bottom row: three snapshots showing the coning cross-product ──
-for idx, (t0, label) in enumerate([
-    (0.1, "早期 — dth1 x dth2 小"),
-    (0.3, "中期 — dth1 x dth2 积累"),
-    (0.5, "后期 — 漂移明显"),
-]):
-    i0 = int(t0 / dt_fine)
-    i1 = i0 + half_fine
-    ax = fig.add_subplot(gs[2, idx])
-    # Show ω trajectory in 3D
-    d1 = np.array([np.sum(wx[i0:i1])*dt_fine,
-                   np.sum(wy[i0:i1])*dt_fine,
-                   np.sum(wz[i0:i1])*dt_fine])
-    d2 = np.array([np.sum(wx[i1:i1+half_fine])*dt_fine,
-                   np.sum(wy[i1:i1+half_fine])*dt_fine,
-                   np.sum(wz[i1:i1+half_fine])*dt_fine])
-    cross = np.cross(d1, d2)
-    ax.arrow(0, 0, d1[0]*100, d1[1]*100,
-             color="blue", width=0.0002, head_width=0.0008, label="dth1")
-    ax.arrow(0, 0, d2[0]*100, d2[1]*100,
-             color="green", width=0.0002, head_width=0.0008, label="dth2")
-    ax.arrow(0, 0, cross[0]*10000, cross[1]*10000,
-             color="red", width=0.0002, head_width=0.0008, label="dth1 x dth2 x100")
-    ax.set_xlabel("X"); ax.set_ylabel("Y")
-    ax.set_title(f"{label}\n补偿项 Z = {cross[2]*1e6:.1f} µrad")
-    ax.set_aspect("equal")
-    ax.legend(fontsize=7)
-    ax.grid(True, alpha=0.3)
+ax.text(0.05, 0.95, msg, transform=ax.transAxes, fontsize=9,
+        va="top",
+        bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8))
 
 fig.suptitle("圆锥效应 (Coning): X-Y 角振动 → Z 轴净旋转",
-             fontsize=14, fontweight="bold", y=0.98)
+             fontsize=13, fontweight="bold", y=0.98)
+fig.tight_layout(rect=[0, 0, 1, 0.95])
 
 out = os.path.join(os.path.dirname(__file__), "outputs", "coning_error.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
