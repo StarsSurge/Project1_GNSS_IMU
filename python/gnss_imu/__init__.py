@@ -24,6 +24,14 @@ from gnss_imu.kalman_filter_1d import (
     KalmanFilter1D,                # 1D KF 类：硬编码 2 状态（位置+速度）
     create_constant_velocity_filter,      # 工厂函数：1D 匀速模型（全状态观测）
 )
+from gnss_imu.imu_allan import (
+    allan_deviation,
+    fit_allan_log_slope,
+    load_imu_rate_csv,
+    overlapping_allan_deviation,
+    sampling_interval_statistics,
+    validate_uniform_sampling,
+)
 
 __all__ = [
     # 1D 教学版
@@ -36,4 +44,11 @@ __all__ = [
     # 扩展卡尔曼滤波
     "ExtendedKalmanFilter",
     "create_range_bearing_ekf",
+    # IMU Allan analysis
+    "allan_deviation",
+    "overlapping_allan_deviation",
+    "sampling_interval_statistics",
+    "validate_uniform_sampling",
+    "load_imu_rate_csv",
+    "fit_allan_log_slope",
 ]

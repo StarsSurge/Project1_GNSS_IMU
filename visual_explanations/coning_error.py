@@ -1,244 +1,317 @@
-r"""圆锥效应 (Coning) 图解 — 三张独立大图。
+r"""Coning error visualized with a fine-integration attitude truth model."""
 
-图1: 物理机制 — 为什么两个轴的角振动会在第三轴产生净旋转
-图2: 三维示意 — 圆锥在桌面滚动的空间图像
-图3: 实际影响 — 单子样 vs 双子样航向漂移对比
+from __future__ import annotations
 
-运行: python visual_explanations/coning_error.py
-输出: visual_explanations/outputs/coning_{1,2,3}_*.png
-"""
-
-import os, sys
-import numpy as np
-
-sys.path.insert(0, os.path.join(os.path.dirname(__file__), "..", "python"))
+import os
 
 import matplotlib
-matplotlib.use("Agg")
 import matplotlib.font_manager as fm
-_CANDIDATES = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC",
-               "PingFang SC", "Heiti SC"]
-_avail = {f.name for f in fm.fontManager.ttflist}
-_ch = next((n for n in _CANDIDATES if n in _avail), None)
-if _ch:
-    matplotlib.rcParams["font.sans-serif"] = [_ch, "DejaVu Sans"]
-    matplotlib.rcParams["font.family"] = "sans-serif"
+import numpy as np
+
+from imu_visualization_math import (
+    attitude_error_rotvec,
+    coning_correct,
+    quat_multiply,
+    quat_to_dcm,
+    rotvec_to_quat,
+)
+
+matplotlib.use("Agg")
+_CANDIDATES = ["Microsoft YaHei", "SimHei", "Noto Sans CJK SC"]
+_AVAILABLE = {font.name for font in fm.fontManager.ttflist}
+_FONT = next((name for name in _CANDIDATES if name in _AVAILABLE), None)
+if _FONT:
+    matplotlib.rcParams["font.sans-serif"] = [_FONT, "DejaVu Sans"]
 matplotlib.rcParams["axes.unicode_minus"] = False
 import matplotlib.pyplot as plt
 
 OUT = os.path.join(os.path.dirname(__file__), "outputs")
 os.makedirs(OUT, exist_ok=True)
 
-# ── quaternion utils ──
-def qmul(q1, q2):
-    w1,x1,y1,z1=q1; w2,x2,y2,z2=q2
-    return np.array([w1*w2-x1*x2-y1*y2-z1*z2,
-                     w1*x2+x1*w2+y1*z2-z1*y2,
-                     w1*y2-x1*z2+y1*w2+z1*x2,
-                     w1*z2+x1*y2-y1*x2+z1*w2])
-def aa2q(axis, angle):
-    a=np.asarray(axis); n=np.linalg.norm(a)
-    if n<1e-15: return np.array([1.,0.,0.,0.])
-    u=a/n; h=angle*.5
-    return np.array([np.cos(h),u[0]*np.sin(h),u[1]*np.sin(h),u[2]*np.sin(h)])
-def q2y(q): w,x,y,z=q; return np.arctan2(2*(w*z+x*y),1-2*(y*y+z*z))
 
-# ── simulation params ──
-T, dt_fine, nav_T = 2.0, 0.0001, 0.01
-omega, amp = 5.0, 0.02
-t = np.arange(0, T, dt_fine); n = len(t)
-wx = amp*omega*np.cos(omega*t)
-wy = amp*omega*np.cos(omega*t+np.pi/2); wz = np.zeros_like(t)
+def save(fig: plt.Figure, filename: str) -> None:
+    fig.savefig(os.path.join(OUT, filename), dpi=160, bbox_inches="tight")
+    plt.close(fig)
+    print(f"Saved: {filename}")
 
-# truth
-q_t = np.array([1.,0.,0.,0.]); q_hist = np.zeros((n,4))
-for i in range(n):
-    dth = np.array([wx[i],wy[i],wz[i]])*dt_fine
-    a = np.linalg.norm(dth)
-    dq = aa2q(dth/a,a) if a>1e-15 else np.array([1.,0.,0.,0.])
-    q_t = qmul(q_t,dq); q_t/=np.linalg.norm(q_t); q_hist[i]=q_t
 
-# navigation
-steps = int(T/nav_T); fpn = int(nav_T/dt_fine); hf = fpn//2
-q1=np.array([1.,0.,0.,0.]); q2=np.array([1.,0.,0.,0.])
-y1=np.zeros(steps); y2=np.zeros(steps); yt=np.zeros(steps)
-cross_z = np.zeros(steps)
-for k in range(steps):
-    i0=k*fpn
-    dth_t=np.array([np.sum(wx[i0:i0+fpn])*dt_fine,
-                    np.sum(wy[i0:i0+fpn])*dt_fine,0.])
-    a=np.linalg.norm(dth_t)
-    dq=aa2q(dth_t/a,a) if a>1e-15 else np.array([1.,0.,0.,0.])
-    q1=qmul(q1,dq); q1/=np.linalg.norm(q1); y1[k]=q2y(q1)
+# A circular angular-rate excitation. Frequency is explicitly in Hz.
+duration = 4.0
+fine_dt = 0.0002
+nav_dt = 0.01
+frequency_hz = 3.0
+angular_frequency = 2.0 * np.pi * frequency_hz
+cone_angle = np.deg2rad(2.0)
+t = np.arange(0.0, duration, fine_dt)
+omega_x = cone_angle * angular_frequency * np.cos(angular_frequency * t)
+omega_y = cone_angle * angular_frequency * np.sin(angular_frequency * t)
+omega_body = np.column_stack([omega_x, omega_y, np.zeros_like(t)])
 
-    dth1=np.array([np.sum(wx[i0:i0+hf])*dt_fine,np.sum(wy[i0:i0+hf])*dt_fine,0.])
-    dth2=np.array([np.sum(wx[i0+hf:i0+fpn])*dt_fine,np.sum(wy[i0+hf:i0+fpn])*dt_fine,0.])
-    cross_z[k]=np.cross(dth1,dth2)[2]*1e6  # urad
-    dth_2=dth1+dth2+(2./3.)*np.cross(dth1,dth2)
-    a=np.linalg.norm(dth_2)
-    dq=aa2q(dth_2/a,a) if a>1e-15 else np.array([1.,0.,0.,0.])
-    q2=qmul(q2,dq); q2/=np.linalg.norm(q2); y2[k]=q2y(q2)
-    yt[k]=q2y(q_hist[i0])
+# Fine quaternion integration is the numerical truth.
+q_truth = np.array([1.0, 0.0, 0.0, 0.0])
+truth_history = np.empty((t.size, 4))
+for index, omega in enumerate(omega_body):
+    q_truth = quat_multiply(q_truth, rotvec_to_quat(omega * fine_dt))
+    q_truth /= np.linalg.norm(q_truth)
+    truth_history[index] = q_truth
 
-tn=np.arange(steps)*nav_T
-err1=np.rad2deg(y1-yt)*3600
-err2=np.rad2deg(y2-yt)*3600
+samples_per_nav = int(round(nav_dt / fine_dt))
+half_samples = samples_per_nav // 2
+nav_steps = t.size // samples_per_nav
+nav_time = (np.arange(nav_steps) + 1) * nav_dt
 
-# ══════════════════════════════════════════════════════════════════
-# FIGURE 1 — Physical Mechanism
-# ══════════════════════════════════════════════════════════════════
+q_sum = np.array([1.0, 0.0, 0.0, 0.0])
+q_two_sample = q_sum.copy()
+error_sum = np.zeros((nav_steps, 3))
+error_two_sample = np.zeros((nav_steps, 3))
+cross_terms = np.zeros((nav_steps, 3))
 
-fig, axes = plt.subplots(2, 2, figsize=(14, 10))
-((ax0, ax1), (ax2, ax3)) = axes
+for epoch in range(nav_steps):
+    start = epoch * samples_per_nav
+    middle = start + half_samples
+    end = start + samples_per_nav
+    dtheta1 = omega_body[start:middle].sum(axis=0) * fine_dt
+    dtheta2 = omega_body[middle:end].sum(axis=0) * fine_dt
 
-# (0,0) ω signals
-ax = ax0
-ax.plot(t[:2000], wx[:2000]*57.3, "red", lw=0.8, label="ω_x")
-ax.plot(t[:2000], wy[:2000]*57.3, "blue", lw=0.8, label="ω_y")
-ax.plot(t[:2000], wz[:2000], "k--", lw=0.5, label="ω_z (=0!)")
-ax.set_xlabel("时间 [s]"); ax.set_ylabel("角速度 [°/s]")
-ax.set_title("① 角速度输入: X 和 Y 有同频振动, Z 恒为零", fontsize=11)
-ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+    q_sum = quat_multiply(q_sum, rotvec_to_quat(dtheta1 + dtheta2))
+    q_sum /= np.linalg.norm(q_sum)
 
-# (0,1) Phase diagram X vs Y
-ax = ax1
-ax.plot(np.sin(omega*t[:3000]), np.cos(omega*t[:3000]+np.pi/2), "b-", lw=0.6)
-ax.set_xlabel("X 轴角度 (归一化)"); ax.set_ylabel("Y 轴角度 (归一化)")
-ax.set_title("② X-Y 相位图: 圆形轨迹 → 圆锥运动", fontsize=11)
-ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
-ax.annotate("轨迹是圆形\n意味着圆锥运动", xy=(0.5, 0.5), fontsize=10, ha="center",
-            bbox=dict(boxstyle="round", facecolor="yellow", alpha=0.3))
+    corrected = coning_correct(dtheta1, dtheta2)
+    q_two_sample = quat_multiply(q_two_sample, rotvec_to_quat(corrected))
+    q_two_sample /= np.linalg.norm(q_two_sample)
 
-# (2,0) Cross product explanation
-ax = ax2
-dth_sample = np.array([0.001, 0.001, 0.0])
-# draw dth1 and dth2
-ax.arrow(0, 0, 5, 0, color="red", width=0.05, head_width=0.3, label="dth1 (子样1)")
-ax.arrow(0, 0, 0, 5, color="blue", width=0.05, head_width=0.3, label="dth2 (子样2)")
-ax.arrow(0, 0, 0, 0, color="purple", width=0.05, head_width=0.3)  # placeholder
-# dth1+dth2
-ax.arrow(0, 0, 5, 5, color="gray", width=0.03, head_width=0.2, alpha=0.5)
-ax.text(5.3, 5.3, "dth1+dth2\n(简单相加)", fontsize=8, color="gray")
-# cross product (out of page → Z)
-ax.annotate("dth1×dth2\n指向 Z 轴\n(垂直纸面向外)",
-            xy=(2.5, 2.5), fontsize=10, ha="center", color="purple",
-            xytext=(8, 2), arrowprops=dict(arrowstyle="->", color="purple", lw=1.5))
-ax.set_xlim(-1, 10); ax.set_ylim(-1, 7)
-ax.set_aspect("equal"); ax.grid(True, alpha=0.3)
-ax.set_title("③ 叉积的物理含义\n"
-             "dth1 × dth2 = 两个旋转的'不可交换'部分 → 指向 Z 轴", fontsize=11)
-ax.legend(fontsize=8, loc="lower right")
+    truth_at_end = truth_history[end - 1]
+    error_sum[epoch] = attitude_error_rotvec(q_sum, truth_at_end)
+    error_two_sample[epoch] = attitude_error_rotvec(
+        q_two_sample, truth_at_end
+    )
+    cross_terms[epoch] = (2.0 / 3.0) * np.cross(dtheta1, dtheta2)
 
-# (2,1) Cross product values
-ax = ax3
-colors = ["green" if v>0 else "red" for v in cross_z[:40]]
-ax.bar(range(40), cross_z[:40], color=colors, alpha=0.7)
-ax.set_xlabel("导航历元"); ax.set_ylabel("(dth1×dth2) 的 Z 分量 [µrad]")
-ax.set_title("④ 每历元的圆锥叉积项\n正=Z轴正转, 负=Z轴反转 — 交替但累积", fontsize=11)
-ax.grid(axis="y", alpha=0.3)
-ax.axhline(0, color="gray", lw=0.5)
+arcsec_per_rad = np.rad2deg(1.0) * 3600.0
+z_error_sum_arcsec = error_sum[:, 2] * arcsec_per_rad
+z_error_two_arcsec = error_two_sample[:, 2] * arcsec_per_rad
+cross_z_arcsec = cross_terms[:, 2] * arcsec_per_rad
+equivalent_rate_sum = abs(z_error_sum_arcsec[-1]) / duration
+equivalent_rate_two = abs(z_error_two_arcsec[-1]) / duration
+improvement = equivalent_rate_sum / max(equivalent_rate_two, 1e-12)
 
-fig.suptitle("圆锥效应 — 物理机制: 角振动 × 角振动 → 正交轴净旋转",
-             fontsize=14, fontweight="bold", y=0.99)
-fig.tight_layout(rect=[0, 0, 1, 0.95])
-fig.savefig(os.path.join(OUT, "coning_1_mechanism.png"), dpi=150, bbox_inches="tight")
-plt.close(fig)
-print("Saved: coning_1_mechanism.png")
 
-# ══════════════════════════════════════════════════════════════════
-# FIGURE 2 — Spatial Example
-# ══════════════════════════════════════════════════════════════════
+# ---------------------------------------------------------------------------
+# Figure 1: mechanism
+# ---------------------------------------------------------------------------
 
-fig = plt.figure(figsize=(14, 8))
+fig, axes = plt.subplots(2, 2, figsize=(16, 10), constrained_layout=True)
 
-# Left: 3D cone trajectory
+window = t <= 1.0
+ax = axes[0, 0]
+ax.plot(t[window], np.rad2deg(omega_x[window]), label="ωx")
+ax.plot(t[window], np.rad2deg(omega_y[window]), label="ωy")
+ax.plot(t[window], np.zeros(window.sum()), "k--", lw=0.8, label="ωz = 0")
+ax.set_title("① 两个正交角速度分量相差 90°")
+ax.set_xlabel("时间 [s]")
+ax.set_ylabel("角速度 [deg/s]")
+ax.legend()
+ax.grid(alpha=0.25)
+
+ax = axes[0, 1]
+ax.plot(
+    omega_x[window] / np.max(abs(omega_x)),
+    omega_y[window] / np.max(abs(omega_y)),
+    color="tab:blue",
+)
+ax.set_aspect("equal", adjustable="box")
+ax.set_title("② ωx-ωy 相位轨迹是圆：旋转轴绕锥面运动")
+ax.set_xlabel("归一化 ωx")
+ax.set_ylabel("归一化 ωy")
+ax.grid(alpha=0.25)
+
+ax = axes[1, 0]
+d1 = np.array([1.0, 0.15])
+d2 = np.array([-0.1, 0.9])
+ax.quiver(0, 0, *d1, angles="xy", scale_units="xy", scale=1, color="tab:red")
+ax.quiver(
+    d1[0], d1[1], *d2, angles="xy", scale_units="xy", scale=1, color="tab:blue"
+)
+ax.quiver(
+    0, 0, *(d1 + d2), angles="xy", scale_units="xy", scale=1, color="0.45"
+)
+ax.text(0.48, 0.02, "Δθ_1", color="tab:red")
+ax.text(0.82, 0.62, "Δθ_2", color="tab:blue")
+ax.text(0.30, 0.72, "简单向量和", color="0.35")
+ax.text(
+    0.02,
+    0.96,
+    "有限旋转不满足交换律：\n"
+    "Exp(Δθ_1) Exp(Δθ_2) ≠ Exp(Δθ_1+Δθ_2)\n\n"
+    "两子样线性角速度近似：\n"
+    "Δθ_corr = Δθ_1 + Δθ_2 + 2/3(Δθ_1×Δθ_2)\n\n"
+    "叉积沿第三轴，补偿被向量相加遗漏的二阶旋转。",
+    transform=ax.transAxes,
+    va="top",
+    fontsize=9,
+    bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.85),
+)
+ax.set_xlim(-0.2, 1.5)
+ax.set_ylim(-0.2, 1.3)
+ax.set_aspect("equal", adjustable="box")
+ax.set_title("③ 向量相加遗漏旋转次序")
+ax.grid(alpha=0.2)
+
+ax = axes[1, 1]
+epochs = np.arange(min(80, nav_steps))
+ax.bar(epochs, cross_z_arcsec[: epochs.size], color="tab:purple", width=0.8)
+ax.axhline(0.0, color="black", lw=0.7)
+ax.set_title("④ 每个导航历元的圆锥补偿量")
+ax.set_xlabel("导航历元")
+ax.set_ylabel("Z 分量 [arcsec]")
+ax.grid(axis="y", alpha=0.25)
+
+fig.suptitle(
+    "圆锥误差：角增量的不可交换性与两子样交叉项",
+    fontsize=15,
+    fontweight="bold",
+)
+save(fig, "coning_1_mechanism.png")
+
+
+# ---------------------------------------------------------------------------
+# Figure 2: spatial interpretation
+# ---------------------------------------------------------------------------
+
+stride = max(1, truth_history.shape[0] // 1800)
+body_z_nav = np.array(
+    [quat_to_dcm(q)[:, 2] for q in truth_history[::stride]]
+)
+
+fig = plt.figure(figsize=(15, 8), constrained_layout=True)
 ax = fig.add_subplot(1, 2, 1, projection="3d")
-# cone surface
-n_cone = 3000; r_cone = 0.2
-theta_c = 2*np.pi*omega*t[:n_cone]
-z_c = np.sin(theta_c)*r_cone
-x_c = np.cos(theta_c)*r_cone
-y_c = np.cos(theta_c+np.pi/2)*r_cone*0.6
-ax.plot(x_c, y_c, z_c, "b", lw=0.8)
-# Z axis
-ax.quiver(0, 0, -0.3, 0, 0, 0.5, color="red", lw=2, arrow_length_ratio=0.08)
-ax.text(0, 0, 0.25, "Z 轴净旋转", color="red", fontsize=10)
-# X and Y axes at base
-ax.quiver(0, 0, -0.3, 0.3, 0, 0, color="gray", lw=1, arrow_length_ratio=0.1, alpha=0.5)
-ax.quiver(0, 0, -0.3, 0, 0.3, 0, color="gray", lw=1, arrow_length_ratio=0.1, alpha=0.5)
-ax.set_xlabel("X"); ax.set_ylabel("Y"); ax.set_zlabel("Z")
-ax.set_title("圆锥运动的 3D 轨迹\n"
-             "X-Y 振荡画出椭圆底, Z 轴获得净旋转\n"
-             "(类比: 桌面滚动的圆锥)", fontsize=11)
-ax.view_init(elev=20, azim=-50)
+ax.plot(
+    body_z_nav[:, 0],
+    body_z_nav[:, 1],
+    body_z_nav[:, 2],
+    color="tab:blue",
+    lw=1.0,
+)
+ax.scatter(
+    body_z_nav[0, 0],
+    body_z_nav[0, 1],
+    body_z_nav[0, 2],
+    color="tab:green",
+    label="起点",
+)
+ax.scatter(
+    body_z_nav[-1, 0],
+    body_z_nav[-1, 1],
+    body_z_nav[-1, 2],
+    color="tab:red",
+    label="终点",
+)
+ax.set_xlabel("N")
+ax.set_ylabel("E")
+ax.set_zlabel("D")
+ax.set_title("Body Z 轴在导航系单位球上的轨迹")
+ax.legend()
+ax.view_init(elev=22, azim=-55)
 
-# Right: explanation with 2D projection views
 ax = fig.add_subplot(1, 2, 2)
 ax.axis("off")
-msg = (
-    "圆锥效应 — 空间直观\n\n"
-    "想象一个圆锥在桌面上滚动:\n\n"
-    "• 圆锥的尖端着地, 在桌面画圈\n"
-    "  (X-Y 平面上的圆形 = 角振动)\n\n"
-    "• 圆锥绕着自身的 Z 轴在转动\n"
-    "  (即使桌面是平的, Z 轴角速度=0!)\n\n"
-    "• 桌面画一圈 → 圆锥自转一小圈\n"
-    f"  旋转量 ≈ (振幅)²/(2·频率) 每周期\n\n"
-    "这就是 '不可交换误差' 的空间直觉:\n"
-    "X 转 + Y 转 ≠ Y 转 + X 转\n"
-    "其差值 = X×Y 叉积 → Z 轴净旋转\n\n"
-    "数值参数:\n"
-    f"  角振幅: {amp*57.3:.1f}°\n"
-    f"  频率: {omega} Hz\n"
-    f"  每历元叉积: {np.mean(np.abs(cross_z)):.1f} µrad\n"
-    f"  2 秒累积漂移 (单): {np.max(np.abs(err1)):.2f} °/h"
+ax.text(
+    0.03,
+    0.96,
+    "空间直觉\n\n"
+    "旋转轴在 X-Y 平面连续绕行，body 轴尖端形成闭合锥形轨迹。\n"
+    "即使 ωz=0，一周有限旋转的乘积仍可能包含 Z 方向净旋转。\n\n"
+    "这不是传感器 bias，而是离散算法遗漏的二阶项：\n"
+    "• 提高 IMU 采样率会减小它\n"
+    "• 缩短导航更新周期会减小它\n"
+    "• 两子样/多子样算法显式补偿它\n\n"
+    "适用前提\n"
+    "2/3 系数来自两个等时间子样以及角速度在周期内线性变化假设。\n"
+    "它不是任意采样结构下都通用的魔法常数。",
+    transform=ax.transAxes,
+    va="top",
+    fontsize=12,
+    linespacing=1.5,
+    bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.9),
 )
-ax.text(0.05, 0.95, msg, transform=ax.transAxes, fontsize=11, va="top",
-        linespacing=1.5,
-        bbox=dict(boxstyle="round", facecolor="lightyellow", alpha=0.8))
+ax.text(
+    0.03,
+    0.25,
+    f"本实验：锥角幅值 {np.rad2deg(cone_angle):.1f} deg，"
+    f"频率 {frequency_hz:.1f} Hz\n"
+    f"导航周期 {nav_dt*1000:.0f} ms，真值积分步长 {fine_dt*1e6:.0f} us",
+    transform=ax.transAxes,
+    fontsize=11,
+)
 
-fig.suptitle("圆锥效应 — 空间直观: 3D 轨迹 + 物理类比", fontsize=14, fontweight="bold", y=0.99)
-fig.tight_layout(rect=[0, 0, 1, 0.95])
-fig.savefig(os.path.join(OUT, "coning_2_spatial.png"), dpi=150, bbox_inches="tight")
-plt.close(fig)
-print("Saved: coning_2_spatial.png")
+fig.suptitle(
+    "圆锥运动的空间解释：闭合轴轨迹不代表姿态乘积完全闭合",
+    fontsize=15,
+    fontweight="bold",
+)
+save(fig, "coning_2_spatial.png")
 
-# ══════════════════════════════════════════════════════════════════
-# FIGURE 3 — Practical Impact
-# ══════════════════════════════════════════════════════════════════
 
-fig, axes = plt.subplots(1, 3, figsize=(18, 5.5))
+# ---------------------------------------------------------------------------
+# Figure 3: numerical impact
+# ---------------------------------------------------------------------------
 
-# (0) Full yaw drift
+fig, axes = plt.subplots(1, 3, figsize=(18, 5.8), constrained_layout=True)
+
 ax = axes[0]
-ax.plot(tn, err1, "gray", lw=1.2, label="单子样 (不补偿)")
-ax.plot(tn, err2, "r", lw=1.2, label="双子样 (圆锥补偿)")
-ax.axhline(0, color="gray", ls=":", lw=0.5)
-ax.set_xlabel("时间 [s]"); ax.set_ylabel("航向误差 [°/h]")
-ax.set_title("全时段航向漂移", fontsize=11)
-ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+ax.plot(nav_time, z_error_sum_arcsec, color="0.45", label="简单相加")
+ax.plot(nav_time, z_error_two_arcsec, color="tab:red", label="两子样补偿")
+ax.set_title("相对细积分真值的 Z 姿态误差")
+ax.set_xlabel("时间 [s]")
+ax.set_ylabel("姿态误差 [arcsec]")
+ax.legend()
+ax.grid(alpha=0.25)
 
-# (1) Zoom first 0.5s
 ax = axes[1]
-mask = tn <= 0.5
-ax.plot(tn[mask], err1[mask], "gray", lw=1.5, label="单子样")
-ax.plot(tn[mask], err2[mask], "r", lw=1.5, label="双子样")
-ax.set_xlabel("时间 [s]"); ax.set_ylabel("航向误差 [°/h]")
-ax.set_title("前 0.5s 放大 — 误差从零开始累积", fontsize=11)
-ax.legend(fontsize=8); ax.grid(True, alpha=0.3)
+cumulative_correction = -np.cumsum(cross_z_arcsec)
+error_reduction = z_error_sum_arcsec - z_error_two_arcsec
+ax.plot(nav_time, cumulative_correction, color="tab:purple", label="预测的未补偿误差")
+ax.plot(nav_time, error_reduction, "k--", label="实际误差改善量")
+ax.set_title("交叉项同时解释误差大小与符号")
+ax.set_xlabel("时间 [s]")
+ax.set_ylabel("角度 [arcsec]")
+ax.legend()
+ax.grid(alpha=0.25)
 
-# (2) Accumulated cross product vs yaw error
 ax = axes[2]
-cum_cross = np.cumsum(cross_z)*1e-6*57.3*3600  # cumulative effect in deg/h
-ax.plot(tn, cum_cross, "purple", lw=1.2, label="累积叉积 (理论预测)")
-ax.plot(tn, err1, "gray", lw=1.2, alpha=0.7, label="实际航向误差 (单子样)")
-ax.set_xlabel("时间 [s]"); ax.set_ylabel("航向 [°/h]")
-ax.set_title("累积叉积 = 理论漂移量 ≈ 实际误差", fontsize=11)
-ax.legend(fontsize=7); ax.grid(True, alpha=0.3)
+ax.bar(
+    ["简单相加", "两子样"],
+    [equivalent_rate_sum, equivalent_rate_two],
+    color=["0.5", "tab:red"],
+)
+ax.set_yscale("log")
+ax.set_ylabel("末端等效漂移率 [deg/h]")
+ax.set_title("末端角误差 / 实验时长")
+ax.grid(axis="y", alpha=0.25)
+ax.text(
+    0.04,
+    0.96,
+    f"改善倍数：{improvement:.1f}×\n\n"
+    "注意：曲线纵轴是角度 arcsec，\n"
+    "只有末端角误差除以时长后，\n"
+    "才可报告为等效 deg/h。\n\n"
+    "两子样只消除主导二阶项，\n"
+    "并非在任意高动态下误差为零。",
+    transform=ax.transAxes,
+    va="top",
+    fontsize=9,
+    bbox=dict(boxstyle="round", facecolor="white", alpha=0.85),
+)
 
-fig.suptitle("圆锥效应 — 实际影响: 单子样 °/h 级航向漂移 vs 双子样消除",
-             fontsize=13, fontweight="bold", y=0.99)
-fig.tight_layout(rect=[0, 0, 1, 0.93])
-fig.savefig(os.path.join(OUT, "coning_3_impact.png"), dpi=150, bbox_inches="tight")
-plt.close(fig)
-print("Saved: coning_3_impact.png")
+fig.suptitle(
+    "圆锥补偿的定量验证：细积分真值、角度误差与等效漂移率",
+    fontsize=15,
+    fontweight="bold",
+)
+save(fig, "coning_3_impact.png")
+
+print(
+    "Coning equivalent drift [deg/h]: "
+    f"simple={equivalent_rate_sum:.6f}, corrected={equivalent_rate_two:.6f}; "
+    f"improvement={improvement:.1f}x"
+)
