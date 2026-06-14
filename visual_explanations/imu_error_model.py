@@ -10,7 +10,7 @@ r"""IMU 误差模型图解。
 外加 Allan 方差曲线标注各噪声区域。
 
 运行: python visual_explanations/imu_error_model.py
-输出: results/imu_error_model.png
+输出: visual_explanations/outputs/imu_error_model.png
 """
 
 import os
@@ -173,7 +173,7 @@ ax.legend(fontsize=8)
 
 fig.tight_layout(pad=2.0, w_pad=2.5, h_pad=3.0)
 
-out = os.path.join(os.path.dirname(__file__), "..", "results", "imu_error_model.png")
+out = os.path.join(os.path.dirname(__file__), "outputs", "imu_error_model.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 fig.savefig(out, dpi=150, bbox_inches="tight")
 print(f"Saved: {os.path.abspath(out)}")

@@ -7,7 +7,7 @@ r"""划桨效应 (Sculling) 与旋转效应 (Rotation) 图解。
       简单地把起点和终点的测量平均 → 忽略了中间的旋转
 
 运行: python visual_explanations/sculling_rotation_error.py
-输出: results/sculling_rotation_error.png
+输出: visual_explanations/outputs/sculling_rotation_error.png
 """
 
 import os
@@ -282,7 +282,7 @@ ax.grid(True, alpha=0.3)
 fig.suptitle("划桨效应 (Sculling) 与旋转效应 (Rotation): 角振动 × 线振动 → 虚假的常值速度",
              fontsize=14, fontweight="bold", y=0.98)
 
-out = os.path.join(os.path.dirname(__file__), "..", "results",
+out = os.path.join(os.path.dirname(__file__), "outputs",
                    "sculling_rotation_error.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 fig.savefig(out, dpi=150, bbox_inches="tight")

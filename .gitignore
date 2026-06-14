@@ -39,6 +39,7 @@ Desktop.ini
 # Project generated outputs
 results/*
 !results/README.md
+visual_explanations/outputs/*
 .matplotlib-cache/
 
 # Local data cache

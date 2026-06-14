@@ -8,7 +8,7 @@ r"""圆锥效应 (Coning) 图解。
       → 对比单子样 (简单相加) 和双子样 (叉积补偿) 的效果
 
 运行: python visual_explanations/coning_error.py
-输出: results/coning_error.png
+输出: visual_explanations/outputs/coning_error.png
 """
 
 import os
@@ -269,7 +269,7 @@ for idx, (t0, label) in enumerate([
 fig.suptitle("圆锥效应 (Coning): X-Y 角振动 → Z 轴净旋转",
              fontsize=14, fontweight="bold", y=0.98)
 
-out = os.path.join(os.path.dirname(__file__), "..", "results", "coning_error.png")
+out = os.path.join(os.path.dirname(__file__), "outputs", "coning_error.png")
 os.makedirs(os.path.dirname(out), exist_ok=True)
 fig.savefig(out, dpi=150, bbox_inches="tight")
 print(f"Saved: {os.path.abspath(out)}")
