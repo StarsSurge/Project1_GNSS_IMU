@@ -146,8 +146,8 @@ for k in range(nav_steps):
 # ══════════════════════════════════════════════════════════════════
 
 t_nav = np.arange(nav_steps) * nav_T
-fig = plt.figure(figsize=(16, 12))
-gs = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.30)
+fig = plt.figure(figsize=(18, 13))
+gs = fig.add_gridspec(3, 3, hspace=0.45, wspace=0.35)
 
 # ── (0,0): Sculling physical analogy ──
 ax = fig.add_subplot(gs[0, 0])
@@ -162,8 +162,8 @@ for spine in ax.spines.values():
     spine.set_visible(False)
 ax.set_xticks([]); ax.set_yticks([])
 ax.set_xlim(-0.5, 0.8); ax.set_ylim(-0.1, 0.4)
-ax.set_title("划桨效应 物理类比\n手摇 (角振动) + 桨划水 (线振动)\n→ 船获得常值前进速度")
-ax.legend(fontsize=7, loc="lower right")
+ax.set_title("划桨效应 — 物理类比:\n手摇(角) + 桨划水(线) → 船前进(常值速度)", fontsize=9)
+ax.legend(fontsize=6, loc="lower right", ncol=1)
 
 # ── (0,1): ω_x and a_y vs time ──
 ax = fig.add_subplot(gs[0, 1])
@@ -191,8 +191,9 @@ for t0 in t_show:
 ax = fig.add_subplot(gs[0, 2])
 ax.bar(range(len(t_show)), np.array(cross_vals)*1e6, color="purple", alpha=0.7)
 ax.set_xlabel("导航历元"); ax.set_ylabel("划桨补偿项 Z [µm/s]")
-ax.set_title("每个导航历元的划桨补偿 (dv_scul)_z\n"
-             "叉积 dv1 x dth2 + dth1 x dv2 贡献了 Z 方向的虚假速度")
+ax.set_title("每历元划桨补偿项 (dv_scul)_z", fontsize=9)
+ax.text(0.5, -0.35, "叉积 dv1 x dth2 + dth1 x dv2 → Z 方向虚假速度",
+        transform=ax.transAxes, ha="center", fontsize=6.5, color="gray")
 ax.grid(axis="y", alpha=0.3)
 
 # ── (1,:): Velocity error comparison ──
@@ -208,9 +209,8 @@ ax.plot(t_nav, vel_error_double_y, "r", linewidth=1.2,
 ax.fill_between(t_nav, 0, vel_error_single_y, alpha=0.1, color="gray")
 ax.set_xlabel("时间 [s]"); ax.set_ylabel("Y 轴速度误差 [cm/s]")
 ax.set_title(
-    "划桨效应 → Y 轴速度误差 (仅有 X 轴角振动 + Y 轴线振动!)\n"
-    f"角振幅 {amplitude_angle*57.3:.1f}° @ {omega_freq}Hz, "
-    f"线振幅 {amplitude_vel:.2f} m/s² @ {omega_freq}Hz"
+    f"划桨效应 → Y 轴速度误差 (X角振幅{amplitude_angle*57.3:.1f}° + Y线振幅{amplitude_vel:.2f}m/s² @ {omega_freq}Hz)\n"
+    "仅有 X 角振动 + Y 线振动, 单子样 cm/s 级偏差 vs 双子样消除"
 )
 ax.legend(fontsize=9)
 ax.grid(True, alpha=0.3)
@@ -238,8 +238,8 @@ w = 0.35
 ax.bar(x_idx - w/2, scul_z, w, color="purple", alpha=0.7, label="划桨 (2/3)(dth1 x dv2 + dv1 x dth2)")
 ax.bar(x_idx + w/2, rot_z, w, color="orange", alpha=0.7, label="旋转 (1/2)(dθ×dv)")
 ax.set_xlabel("导航历元"); ax.set_ylabel("补偿量 [nm/s]")
-ax.set_title("每历元的划桨 vs 旋转补偿量\n划桨 ≈ 2× 旋转 (此参数组合下)")
-ax.legend(fontsize=7)
+ax.set_title("每历元划桨 vs 旋转补偿量", fontsize=9)
+ax.legend(fontsize=6)
 ax.grid(axis="y", alpha=0.3)
 
 # ── (2,1): Rotation effect explanation ──
@@ -264,7 +264,7 @@ ax.set_xlim(0.2, 0.7); ax.set_ylim(-0.1, 0.4)
 ax.set_aspect("equal")
 for spine in ax.spines.values(): spine.set_visible(False)
 ax.set_xticks([]); ax.set_yticks([])
-ax.set_title("旋转效应\nbody 系在 dt 内旋转 →\ndv 的方向不是恒定的\n简单相加忽略了方向变化")
+ax.set_title("旋转效应: body系在dt内旋转\n速度增量方向变化, 简单相加忽略此变化", fontsize=8)
 ax.legend(fontsize=7)
 
 # ── (2,2): Position error accumulation ──

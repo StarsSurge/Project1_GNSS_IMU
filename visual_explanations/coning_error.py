@@ -183,8 +183,9 @@ for k in range(nav_steps):
 t_nav = np.arange(nav_steps) * nav_T
 yaw_rad_to_deg = np.rad2deg(1.0)
 
-fig = plt.figure(figsize=(16, 10))
-gs = fig.add_gridspec(3, 3, hspace=0.35, wspace=0.30)
+fig = plt.figure(figsize=(16, 12))
+gs = fig.add_gridspec(3, 3, hspace=0.50, wspace=0.35,
+                      height_ratios=[1.0, 0.9, 0.9])
 
 # ── Top-left: phase diagram (X vs Y angle) ──
 ax = fig.add_subplot(gs[0, 0])
@@ -231,8 +232,8 @@ ax.plot(t_nav, yaw_error_double * 3600, "r", linewidth=1.2,
         label="双子样 (圆锥补偿后) — 几乎无漂移")
 ax.set_xlabel("时间 [s]"); ax.set_ylabel("航向角误差 [°/h]")
 ax.set_title(
-    "Z 轴航向漂移 (没有 Z 轴角速度输入!)\n"
-    f"仅靠 X-Y 角振动 {amplitude*57.3:.1f}° @ {omega_freq}Hz → 产生 °/h 级的虚假航向旋转"
+    f"Z 轴航向漂移 — 无 Z 输入, 仅 X-Y 角振动 {amplitude*57.3:.1f}° @ {omega_freq}Hz\n"
+    "单子样 °/h 级漂移 vs 双子样几乎消除"
 )
 ax.legend(fontsize=9)
 ax.grid(True, alpha=0.3)
