@@ -6,6 +6,33 @@
 > 导航周期 100 Hz（dt=0.01s），每个导航历元使用 **2 个 IMU 子样** (200 Hz 原始数据)。
 > 包含完整的圆锥/划桨/旋转效应补偿。
 
+## 零、冻结的数学约定
+
+实现前不再混用下列约定：
+
+1. `C_bn` 将 body 向量旋转到 NED：`v_n = C_bn @ v_b`。
+2. 四元数采用 Hamilton 顺序 `[w, x, y, z]`，`q_bn` 对应 `C_bn`。
+3. 姿态增量右乘：`q_new = q_old ⊗ dq_body`。
+4. 误差定义为真实值减标称值：
+   `δp = p_true - p_nom`，其余加性状态相同。
+5. 姿态采用右乘、body-frame 误差：
+   `q_true = q_nom ⊗ δq`，`δq ≈ [1, δθ/2]`。
+6. IMU bias 定义为测量值中的加性误差：
+   `ω_m = ω_true + b_g + n_g`，`f_m = f_true + b_a + n_a`。
+7. `F`、`G` 是连续时间矩阵；`Phi = I + F * dt`，
+   `Qd = Qc * dt`。
+8. MVP 忽略地球自转、运输角速度、曲率变化、科氏项、杆臂和比例因子。
+
+由这些约定直接得到：
+
+```text
+δp_dot     = δv
+δv_dot     = -C_bn [f_b×] δθ - C_bn δb_a - C_bn n_a
+δtheta_dot = -[omega_b×] δθ - δb_g - n_g
+δb_a_dot   = n_ba
+δb_g_dot   = n_bg
+```
+
 ## 一、文件结构
 
 ```
@@ -23,11 +50,10 @@ IMU 200 Hz 原始数据 (8 帧)
    ├── 导航历元 2 ── sub1=IMU[4], sub2=IMU[5] ── dt=0.01s
    └── 导航历元 3 ── sub1=IMU[6], sub2=IMU[7] ── dt=0.01s
                                       │
-                                      ▼
-        GNSS (1 epoch, 在最后一个历元触发)
+GNSS t=456300.000 ──→ 初始化附近的近似更新（先于首帧 IMU 约 4.4 ms）
                                       │
                                       ▼
-initialize()  ──→  eskf_state
+initialize()  ──→  GNSS update()  ──→  eskf_state
                                       │
   for each 导航历元 (2 subsamples):
      predict(sub1_dtheta, sub1_dvel,
@@ -64,13 +90,13 @@ state = {
 
 ```python
 GRAVITY = np.array([[0.0], [0.0], [9.78]])   # NED 重力 [m/s²]
-R_GNSS  = np.diag([0.01**2, 0.01**2, 0.02**2])  # GNSS 观测噪声 (从 RTK 标准差)
+R_GNSS  = np.diag([0.010**2, 0.009**2, 0.019**2])
 
 # 初始协方差对角线 (顺序: δp, δv, δθ, δb_a, δb_g)
 P0_diag = np.concatenate([
     [1.0]*3,      # 位置不确定度 1m²
     [0.1]*3,      # 速度不确定度 0.1 (m/s)²
-    [0.01]*3,     # 姿态不确定度 ~0.1rad² ≈ 5.7°²
+    [0.01]*3,     # 姿态方差 0.01 rad²，即标准差约 0.1 rad
     [1e-4]*3,     # 加速度计偏置不确定度
     [1e-6]*3,     # 陀螺仪偏置不确定度
 ])
@@ -143,7 +169,10 @@ def axis_angle_to_quat(axis, angle):
 ### 4.3 INS 双子样机械编排
 
 ```python
-def ins_mechanize_2sample(p, v, q, dtheta1, dvel1, dtheta2, dvel2, dt):
+def ins_mechanize_2sample(
+    p, v, q, b_a, b_g,
+    dtheta1, dvel1, dtheta2, dvel2, dt,
+):
     """
     双子样机械编排 — 含圆锥/划桨/旋转效应补偿。
 
@@ -157,6 +186,8 @@ def ins_mechanize_2sample(p, v, q, dtheta1, dvel1, dtheta2, dvel2, dt):
     q : (4,1)  当前姿态四元数 (body→nav)
     dtheta1, dtheta2 : (3,)  子样 1, 2 的角度增量 [rad]
     dvel1,   dvel2   : (3,)  子样 1, 2 的速度增量 [m/s]
+    b_a : (3,1)  当前加速度计 bias 估计 [m/s²]
+    b_g : (3,1)  当前陀螺仪 bias 估计 [rad/s]
     dt : float  导航历元步长 (2×T_imu, = 0.01 s)
 
     返回
@@ -172,29 +203,36 @@ dtheta2 = np.asarray(dtheta2).reshape(3,)
 dvel1   = np.asarray(dvel1).reshape(3,)
 dvel2   = np.asarray(dvel2).reshape(3,)
 
-# ── ① 总增量 ──
+# ── ① 每个子样先做 bias 补偿 ──
+dt_sub = dt / 2.0
+dtheta1 = dtheta1 - b_g.ravel() * dt_sub
+dtheta2 = dtheta2 - b_g.ravel() * dt_sub
+dvel1 = dvel1 - b_a.ravel() * dt_sub
+dvel2 = dvel2 - b_a.ravel() * dt_sub
+
+# ── ② 总增量 ──
 dtheta = dtheta1 + dtheta2
 dvel   = dvel1 + dvel2
 
-# ── ② 圆锥补偿 ──
+# ── ③ 圆锥补偿 ──
 #     "角振动 × 角振动 → 在第三轴产生净旋转"
 coning = np.cross(dtheta1, dtheta2)         # (3,) 叉积
 dtheta = dtheta + (2.0 / 3.0) * coning
 
-# ── ③ 划桨补偿 ──
+# ── ④ 划桨补偿 ──
 #     "角振动 × 线振动 + 线振动 × 角振动 → 虚假的常值速度"
 sculling = (np.cross(dtheta1, dvel2) +
             np.cross(dvel1, dtheta2))
 dvel_scul = (2.0 / 3.0) * sculling
 
-# ── ④ 旋转效应补偿 ──
+# ── ⑤ 旋转效应补偿 ──
 #     "dt 内 body 系旋转 → 速度增量的方向在变"
 dvel_rot = 0.5 * np.cross(dtheta, dvel)
 
-# ── ⑤ 总速度增量 (划桨 + 旋转均已补偿) ──
+# ── ⑥ 总速度增量 (划桨 + 旋转均已补偿) ──
 dvel = dvel + dvel_scul + dvel_rot
 
-# ── ⑥ 姿态更新 (用补偿后的 dtheta) ──
+# ── ⑦ 姿态更新 (用补偿后的 dtheta) ──
 angle = np.linalg.norm(dtheta)
 if angle > 1e-15:
     axis = dtheta / angle
@@ -204,12 +242,12 @@ else:
 q_new = quat_multiply(q, dq)
 q_new = q_new / np.linalg.norm(q_new)
 
-# ── ⑦ 速度更新 (用旧姿态 + 补偿后的 dvel) ──
+# ── ⑧ 速度更新 (用旧姿态 + 补偿后的 dvel) ──
 C = quat_to_dcm(q)                           # 旧姿态
 dvel_ned = C @ dvel.reshape(3, 1)            # body→nav
 v_new = v + dvel_ned + GRAVITY * dt          # 加重力
 
-# ── ⑧ 位置更新 (梯形积分) ──
+# ── ⑨ 位置更新 (梯形积分) ──
 p_new = p + (v + v_new) * dt / 2.0
 
 return p_new, v_new, q_new
@@ -218,15 +256,15 @@ return p_new, v_new, q_new
 ### 4.4 误差状态传播 (build F, G, P propagation)
 
 ```python
-def build_F(C_bn, dvel_body, dt):
+def build_F(C_bn, specific_force_b, angular_rate_b):
     """
     组装 15×15 系统矩阵 F。
 
     参数
     ----
     C_bn : (3,3)  当前姿态的方向余弦矩阵 C_b^n
-    dvel_body : (3,)  本帧速度增量 (body 系) [m/s]
-    dt : float  时间步长
+    specific_force_b : (3,)  去偏后的平均比力 [m/s²]
+    angular_rate_b : (3,)  去偏后的平均角速度 [rad/s]
 
     返回
     ----
@@ -241,40 +279,59 @@ def build_G(C_bn):
     ----
     G : (15,12)
     """
+```
 
+右乘 body-frame 误差约定下：
+
+```python
+G = np.zeros((15, 12))
+G[3:6, 0:3] = -C_bn
+G[6:9, 3:6] = -np.eye(3)
+G[9:12, 6:9] = np.eye(3)
+G[12:15, 9:12] = np.eye(3)
+```
+
+噪声符号不会改变单独的对角协方差贡献，但必须与误差微分方程保持一致，
+否则以后加入相关噪声或交叉项时会出错。
+
+```python
 def build_Qd(dt):
     """
     组装 12×12 离散时间过程噪声。
 
-    Qd = diag(
-        σ_a² * dt² * I₃,    ← 加速度计白噪声 (速度随机游走)
-        σ_g² * dt² * I₃,    ← 陀螺仪白噪声 (角度随机游走)
-        σ_ba² * dt * I₃,    ← 加速度计偏置随机游走
-        σ_bg² * dt * I₃     ← 陀螺仪偏置随机游走
-    )
+    Qc = diag(σ_a² I₃, σ_g² I₃, σ_ba² I₃, σ_bg² I₃)
+    Qd = Qc * dt
+
+    这里的 σ 是连续时间噪声密度，G 是连续时间噪声驱动矩阵。
     """
 
 def predict(state, dtheta1, dvel1, dtheta2, dvel2, dt):
     """
     完整的 IMU 预测步 (双子样):
     1. ins_mechanize_2sample() 更新标称状态 (含圆锥/划桨/旋转补偿)
-    2. build_F() — 用子样的平均 dvel 构建 F 矩阵
-    3. build_G() build_Qd()
-    4. Φ = I + F·dt
-    5. P = Φ @ P @ Φᵀ + G @ Qd @ Gᵀ
+    2. 用去偏后的总增量除以 dt，得到平均比力和角速度
+    3. build_F() — 用平均比力、角速度构建连续时间 F
+    4. build_G() build_Qd()
+    5. Φ = I + F·dt
+    6. P = Φ @ P @ Φᵀ + G @ Qd @ Gᵀ
     """
     # 标称状态传播
     p, v, q = state["p"], state["v"], state["q"]
+    b_a, b_g = state["b_a"], state["b_g"]
     p_new, v_new, q_new = ins_mechanize_2sample(
-        p, v, q, dtheta1, dvel1, dtheta2, dvel2, dt,
+        p, v, q, b_a, b_g,
+        dtheta1, dvel1, dtheta2, dvel2, dt,
     )
     state["p"], state["v"], state["q"] = p_new, v_new, q_new
 
-    # 用平均 dvel (body 系) 构造 F 矩阵
-    dvel_mean = (dvel1 + dvel2) / 2.0    # 或者用总 dvel
+    # F 使用连续时间物理量，不能直接传速度/角度增量。
+    dtheta_total = dtheta1 + dtheta2 - b_g.ravel() * dt
+    dvel_total = dvel1 + dvel2 - b_a.ravel() * dt
+    angular_rate_b = dtheta_total / dt
+    specific_force_b = dvel_total / dt
 
-    C = quat_to_dcm(q)                   # 旧姿态
-    F = build_F(C, dvel_mean, dt)
+    C = quat_to_dcm(q)                   # 传播前旧姿态
+    F = build_F(C, specific_force_b, angular_rate_b)
     G = build_G(C)
     Qd = build_Qd(dt)
 
@@ -292,28 +349,37 @@ def predict(state, dtheta1, dvel1, dtheta2, dvel2, dt):
 ```python
 F = np.zeros((15, 15))
 C = C_bn
-vx, vy, vz = dvel_body  # body 系速度增量
+fx, fy, fz = specific_force_b
+wx, wy, wz = angular_rate_b
 
-# 反对称矩阵 [dvel_body ×]
-dv_cross = np.array([
-    [0,    -vz,   vy],
-    [vz,    0,   -vx],
-    [-vy,   vx,    0],
+# 反对称矩阵 [f_b ×] 和 [omega_b ×]
+f_cross = np.array([
+    [0,    -fz,   fy],
+    [fz,    0,   -fx],
+    [-fy,   fx,    0],
+])
+omega_cross = np.array([
+    [0,    -wz,   wy],
+    [wz,    0,   -wx],
+    [-wy,   wx,    0],
 ])
 
 # 块 (0,1): δṗ = δv
 F[0:3, 3:6] = np.eye(3)
 
-# 块 (1,2): δv̇ = -C [Δv×] δθ
-F[3:6, 6:9] = -C @ dv_cross
+# 块 (1,2): δv_dot = -C [f_b×] δtheta
+F[3:6, 6:9] = -C @ f_cross
 
-# 块 (1,3): δv̇ += C · δb_a
-F[3:6, 9:12] = C
+# 块 (1,3): δv_dot += -C · δb_a
+F[3:6, 9:12] = -C
 
-# 块 (2,4): δθ̇ = -C · δb_g
-F[6:9, 12:15] = -C
+# 块 (2,2): 右乘 body-frame 姿态误差自身随角速度旋转
+F[6:9, 6:9] = -omega_cross
 
-# 其余块为零 (e.g. δḃ_a = 0 由纯噪声驱动)
+# 块 (2,4): δtheta_dot += -δb_g
+F[6:9, 12:15] = -np.eye(3)
+
+# 其余块为零 (e.g. δb_a_dot = 0 由纯噪声驱动)
 ```
 
 ### 4.5 GNSS 更新 + 注入
@@ -344,15 +410,19 @@ H[0:3, 0:3] = np.eye(3)
 residual = z_gnss - state["p"]
 
 # 3. 卡尔曼增益
+P = state["P"]
 S = H @ P @ H.T + R_GNSS
-K = P @ H.T @ np.linalg.inv(S)     # (15×3)
+B = P @ H.T
+K = np.linalg.solve(S.T, B.T).T    # (15×3)
 
 # 4. 误差状态修正
 dx = K @ residual                    # (15×1)
 
 # 5. 协方差更新 (Joseph form)
 I15 = np.eye(15)
-P = (I15 - K @ H) @ P
+A = I15 - K @ H
+P = A @ P @ A.T + K @ R_GNSS @ K.T
+P = 0.5 * (P + P.T)
 
 # 6. 注入 (inject)
 dp   = dx[0:3]        # 位置修正
@@ -366,7 +436,8 @@ state["v"] += dv
 state["b_a"] += dba
 state["b_g"] += dbg
 
-# 姿态注入: q = q ⊗ δq, δq ≈ [1, dth/2]
+# 姿态注入与误差定义一致:
+# q_true = q_nom ⊗ δq，因此 q_nom <- q_nom ⊗ δq
 angle = np.linalg.norm(dth)
 if angle > 1e-15:
     axis = (dth / angle).ravel()
@@ -374,7 +445,8 @@ if angle > 1e-15:
     state["q"] = quat_multiply(state["q"], dq)
     state["q"] /= np.linalg.norm(state["q"])
 
-# 7. 重置: 误差状态归零 (P 保持不变)
+# 7. 重置: 误差状态归零。
+# MVP 暂用一阶近似 J_reset ≈ I，因此 P 不额外投影。
 state["P"] = P
 ```
 
@@ -469,7 +541,7 @@ DT_NAV = 0.01   # 100 Hz 导航周期
 ```
 
 ```python
-# ── GNSS 数据: t≈456300.000 (1 Hz) ──
+# ── GNSS 数据: t=456300.000 (1 Hz) ──
 # 来自 GNSS-RTK.txt index 50
 GNSS_DATA = {
     "lat": 30.4447858174,
@@ -504,8 +576,19 @@ def main():
     print(" 初始状态 ")
     print_state(state)
 
-    # ── 历元 0-2: 纯 IMU 预测 (双子样) ──
-    for epoch in range(3):
+    # 注意: GNSS 时间 456300.000 比首帧 IMU 早约 4.4 ms。
+    # MVP smoke test 将它视为“初始化时刻附近”的近似观测，先更新再传播；
+    # 这不是严格时间同步策略。
+    g = GNSS_DATA
+    z_gnss = lla_to_ned_simple(
+        g["lat"], g["lon"], g["alt"], *state["ref_lla"],
+    )
+    update(state, z_gnss)
+    print("\n--- 初始化附近 GNSS 更新后 ---")
+    print_state(state)
+
+    # ── 4 个双子样 IMU 导航历元 ──
+    for epoch in range(4):
         i = epoch * 2  # IMU 原始帧索引
 
         dtheta1 = np.array(IMU_RAW[i][0:3])
@@ -517,29 +600,11 @@ def main():
         print(f"\n--- Epoch {epoch}: 纯 IMU 预测后 ---")
         print_state(state)
 
-    # ── 历元 3: IMU 预测 + GNSS 更新 ──
-    i = 6
-    dtheta1 = np.array(IMU_RAW[i][0:3])
-    dvel1   = np.array(IMU_RAW[i][3:6])
-    dtheta2 = np.array(IMU_RAW[i+1][0:3])
-    dvel2   = np.array(IMU_RAW[i+1][3:6])
-
-    predict(state, dtheta1, dvel1, dtheta2, dvel2, DT_NAV)
-
-    # GNSS 观测: LLA → NED
-    g = GNSS_DATA
-    z_gnss = lla_to_ned_simple(
-        g["lat"], g["lon"], g["alt"], *state["ref_lla"],
-    )
-    update(state, z_gnss)
-
-    print("\n--- Epoch 3: GNSS 更新 + 注入后 ---")
-    print_state(state)
-
     print("\n" + "=" * 64)
     print(" 验证检查 ")
-    print("  [ ] trace(P) 在前 3 帧递增大, GNSS 后减小")
-    print("  [ ] 注入后 p 应接近 [0, 0, 0] (GNSS = 参考原点)")
+    print("  [ ] GNSS 更新后 trace(P) 小于更新前")
+    print("  [ ] 后续纯 IMU 传播时 trace(P) 逐步增大")
+    print("  [ ] GNSS NED 约为 [-0.172, 0.277, -0.198] m")
     print("  [ ] ‖q‖ ≈ 1.0")
     print("  [ ] K 矩阵前 3 行有显著值 (GNSS 主要修正位置)")
     print("  [ ] 圆锥补偿 (2/3)·(dθ1×dθ2) 非零")
@@ -569,9 +634,9 @@ def print_state(state):
 
 | 检查点 | 预期行为 |
 |--------|---------|
-| 4 帧纯 IMU 后 `trace(P)` | 应**增大**（不确定性在积累） |
-| GNSS 更新后 `trace(P)` | 应**减小**（观测带来信息） |
-| 注入后 `p` | 应接近 `[0,0,0]`（GNSS 位置 = 初始参考点位置） |
+| 初始化附近 GNSS 更新后 `trace(P)` | 应**减小**（观测带来信息） |
+| 后续 4 帧纯 IMU 的 `trace(P)` | 应总体**增大**（不确定性积累） |
+| GNSS 转换后的 NED | 约 `[-0.172, 0.277, -0.198] m`，不是零 |
 | K (卡尔曼增益) | 前 3 行应有显著非零值（GNSS 修正位置的主要方向） |
-| `-C[Δv×]` 块 | 检查 F[3:6,6:9] 非零 |
+| `-C[f_b×]` 块 | 检查 F[3:6,6:9] 非零且单位为 `1/s` |
 | q 始终是单位四元数 | `norm(q) ≈ 1.0` |

@@ -66,16 +66,29 @@ pytest
 
 ## 当前状态
 
-当前仓库只包含第一阶段项目结构和学习笔记，还没有加入完整算法实现。
+当前 Python 阶段已经包含：
 
-下一步建议先做一个合成数据 demo：
+- 教学版一维恒速 Kalman Filter
+- 通用 N 维线性 Kalman Filter
+- 距离-方位角 Extended Kalman Filter
+- 可复现单元测试和雅可比数值校验
+- 可运行的可视化示例与 GNSS/IMU、ESKF 学习笔记
+- 面向真实命名列 IMU CSV 的 Allan 分析 MVP，包含时间戳校验、
+  rate/增量转换以及可审计的 CSV、JSON 和 PNG 输出
 
-- 生成简单二维或三维真值轨迹
-- 生成低频 GNSS 位置观测
-- 生成高频 IMU 加速度和角速度观测
-- 用 Matplotlib 画出轨迹和传感器数据
+```powershell
+$env:PYTHONPATH = "$PWD\python"
+python python\examples\demo_1d_kalman_filter.py
+python python\examples\demo_kalman_filter.py
+python python\examples\demo_extended_kalman_filter.py
+python -m pytest tests
+```
 
-这样可以先把单位、坐标系、噪声、采样率这些基础问题站稳，再进入 Kalman Filter 或 ESKF。
+Allan CSV 工具当前属于“验证过的 MVP”，尚未达到部署级：仓库仍缺少可追溯的
+真实静态 IMU 数据、自动静止/温度/饱和检查以及基于等效自由度的置信区间。
+
+下一阶段目标是结合已有数据说明或明确标注的合成轨迹，实现最小可用的
+GNSS/IMU Error-State Kalman Filter。
 
 ## 生成结果说明
 

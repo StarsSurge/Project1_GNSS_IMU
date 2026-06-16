@@ -45,4 +45,5 @@ visual_explanations/outputs/*
 # Local data cache
 data/raw/
 data/cache/
-data/*.txt data/*.nav
+data/**/*.txt
+data/**/*.nav

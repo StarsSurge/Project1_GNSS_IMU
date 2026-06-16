@@ -32,6 +32,8 @@ Array = np.ndarray
 NonlinearFn = Callable[[Array], Array]
 #: 雅可比函数签名：``jac(x) → J``，接收 (n,1) 返回 (n,n) 或 (m,n)
 JacobianFn = Callable[[Array], Array]
+#: 观测残差函数签名：residual_fn(z, z_pred) -> residual
+ResidualFn = Callable[[Array, Array], Array]
 
 
 @dataclass
@@ -69,6 +71,9 @@ class ExtendedKalmanFilter:
     F_jac: JacobianFn = field(repr=False, compare=False)
     h: NonlinearFn = field(repr=False, compare=False)
     H_jac: JacobianFn = field(repr=False, compare=False)
+    residual_fn: ResidualFn | None = field(
+        default=None, repr=False, compare=False
+    )
 
     #: 缓存的状态维度 n 和观测维度 m（在 __post_init__ 中推断）
     _n: int = field(default=0, init=False, repr=False)
@@ -123,11 +128,12 @@ class ExtendedKalmanFilter:
         运算：
             H = H_jac(x)                    — 在当前状态处线性化观测模型
             z_pred = h(x)                   — 用完整非线性模型预测观测
-            residual = z - z_pred           — 新息（观测 - 预测观测）
+            residual = residual_fn(z, z_pred) — 新息（可处理角度周期）
             S = H @ P @ H^T + R             — 新息协方差
             K = P @ H^T @ S^{-1}            — 卡尔曼增益
             x = x + K @ residual            — 状态修正
-            P = (I - K @ H) @ P             — 约瑟夫形式协方差更新
+            A = I - K @ H
+            P = A @ P @ A^T + K @ R @ K^T   — Joseph 形式
 
         参数
         ----
@@ -150,8 +156,18 @@ class ExtendedKalmanFilter:
         H = self.H_jac(self.x)
         # 用完整非线性模型预测观测
         z_pred = self.h(self.x)
-        # 计算新息
-        residual = z - z_pred
+        # 欧氏观测可直接相减；角度等流形观测需要自定义残差。
+        if self.residual_fn is None:
+            residual = z - z_pred
+        else:
+            residual = np.asarray(
+                self.residual_fn(z, z_pred), dtype=float
+            )
+            if residual.shape != (self._m, 1):
+                raise ValueError(
+                    "Expected residual_fn output shape "
+                    f"({self._m}, 1), got {residual.shape}"
+                )
 
         # 新息协方差
         S = H @ self.P @ H.T + self.R
@@ -161,9 +177,11 @@ class ExtendedKalmanFilter:
 
         # 状态修正
         self.x = self.x + K @ residual
-        # 约瑟夫形式协方差更新
+        # Joseph 形式在浮点运算中更好地保持对称性和半正定性。
         I = np.eye(self._n)
-        self.P = (I - K @ H) @ self.P
+        A = I - K @ H
+        self.P = A @ self.P @ A.T + K @ self.R @ K.T
+        self.P = 0.5 * (self.P + self.P.T)
         return self.x, self.P, K, residual
 
     def step(self, z: Array) -> tuple[Array, Array, Array, Array]:
@@ -376,6 +394,18 @@ def range_bearing_H_jac(
     return H
 
 
+def wrap_angle(angle: float | Array) -> float | Array:
+    """将角度归一化到 [-pi, pi)。"""
+    return (angle + np.pi) % (2.0 * np.pi) - np.pi
+
+
+def range_bearing_residual(z: Array, z_pred: Array) -> Array:
+    """计算距离-方位角新息，并处理方位角的 2*pi 周期。"""
+    residual = np.asarray(z, dtype=float) - np.asarray(z_pred, dtype=float)
+    residual[1, 0] = wrap_angle(residual[1, 0])
+    return residual
+
+
 # ── 工厂函数 ──────────────────────────────────────────────────
 
 
@@ -454,5 +484,13 @@ def create_range_bearing_ekf(
         return range_bearing_H_jac(state, sensor_pos)
 
     return ExtendedKalmanFilter(
-        x=x, P=P, Q=Q, R=R, f=_f, F_jac=_F_jac, h=_h, H_jac=_H_jac,
+        x=x,
+        P=P,
+        Q=Q,
+        R=R,
+        f=_f,
+        F_jac=_F_jac,
+        h=_h,
+        H_jac=_H_jac,
+        residual_fn=range_bearing_residual,
     )

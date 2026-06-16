@@ -1,10 +1,20 @@
 # Python Tests
 
-This directory will contain lightweight verification tests for the Python prototypes.
+This directory contains lightweight verification tests for the Python prototypes.
 
-Initial test goals:
+Current coverage includes:
 
-- validate coordinate transform utilities
-- check filter matrix dimensions
-- verify synthetic data reproducibility
-- compare simple cases against closed-form expectations
+- KF and EKF matrix dimensions and invalid-input handling
+- closed-form one-step KF reference values
+- analytic versus finite-difference EKF Jacobians
+- range-bearing angle wrapping across the `±pi` branch
+- Joseph covariance update, symmetry, and positive semidefiniteness
+- deterministic synthetic convergence checks
+- overlapping and non-overlapping Allan deviation checks
+- IMU timestamp gap diagnostics
+
+Run from the repository root:
+
+```powershell
+python -m pytest tests
+```

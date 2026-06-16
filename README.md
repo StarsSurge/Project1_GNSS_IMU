@@ -58,14 +58,32 @@ pytest
 
 ## Current Status
 
-This repository contains the phase-1 structure, learning notes, and an initial
-1D constant-velocity Kalman filter prototype:
+The current Python phase includes:
+
+- an educational 1D constant-velocity Kalman filter
+- a general N-dimensional linear Kalman filter
+- a range-bearing Extended Kalman Filter
+- reproducible unit tests and Jacobian checks
+- runnable visual demos and GNSS/IMU/ESKF learning notes
+- a verified-MVP Allan analysis module for named-column real IMU CSV logs,
+  including timestamp validation, rate/increment conversion, and auditable
+  CSV/JSON/PNG outputs
 
 ```powershell
 $env:PYTHONPATH = "$PWD\python"
 python python\examples\demo_1d_kalman_filter.py
+python python\examples\demo_kalman_filter.py
+python python\examples\demo_extended_kalman_filter.py
 python -m pytest tests
 ```
+
+The Allan CSV tool is not deployment-ready: the repository still lacks a
+traceable real stationary IMU dataset, automatic stationarity/temperature/
+saturation checks, and equivalent-degrees-of-freedom confidence intervals.
+
+The next implementation milestone is a minimal GNSS/IMU error-state
+Kalman filter using a documented real dataset or a clearly labelled
+synthetic trajectory.
 
 ## Notes for Generated Outputs
 

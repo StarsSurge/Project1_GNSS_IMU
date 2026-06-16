@@ -1,0 +1,694 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>圆锥、划桨与旋转效应动态图解</title>
+  <style>
+    :root {
+      --ink: #1f2933;
+      --muted: #5b6472;
+      --line: #d8dee8;
+      --paper: #f5f7fb;
+      --panel: #ffffff;
+      --red: #c53d4a;
+      --blue: #2f6fb2;
+      --green: #2f855a;
+      --orange: #c66a1f;
+      --violet: #6b46c1;
+      --gray: #7b8794;
+    }
+
+    * {
+      box-sizing: border-box;
+    }
+
+    body {
+      margin: 0;
+      color: var(--ink);
+      background: var(--paper);
+      font-family: "Microsoft YaHei", "Noto Sans CJK SC", Arial, sans-serif;
+    }
+
+    header {
+      padding: 18px 24px 12px;
+      background: #fff;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h1 {
+      margin: 0 0 8px;
+      font-size: 24px;
+      letter-spacing: 0;
+    }
+
+    .subtitle {
+      margin: 0;
+      max-width: 1180px;
+      color: var(--muted);
+      font-size: 14px;
+      line-height: 1.6;
+    }
+
+    .toolbar {
+      display: flex;
+      flex-wrap: wrap;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 24px;
+      background: #edf2f7;
+      border-bottom: 1px solid var(--line);
+    }
+
+    button {
+      height: 34px;
+      min-width: 78px;
+      border: 1px solid #aeb7c4;
+      border-radius: 6px;
+      background: #fff;
+      color: var(--ink);
+      font: inherit;
+      cursor: pointer;
+    }
+
+    button:hover {
+      background: #f8fafc;
+    }
+
+    label {
+      display: inline-flex;
+      gap: 8px;
+      align-items: center;
+      font-size: 14px;
+      color: #303946;
+      white-space: nowrap;
+    }
+
+    input[type="range"] {
+      width: 150px;
+      accent-color: var(--blue);
+    }
+
+    input[type="checkbox"] {
+      width: 16px;
+      height: 16px;
+      accent-color: var(--green);
+    }
+
+    main {
+      padding: 16px;
+    }
+
+    .overview {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+
+    .overview div,
+    section {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+    }
+
+    .overview div {
+      padding: 12px 14px;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .overview b {
+      display: block;
+      margin-bottom: 4px;
+      font-size: 14px;
+    }
+
+    .grid {
+      display: grid;
+      grid-template-columns: repeat(3, minmax(0, 1fr));
+      gap: 14px;
+    }
+
+    section {
+      overflow: hidden;
+      min-width: 0;
+    }
+
+    .panel-head {
+      padding: 12px 14px 9px;
+      border-bottom: 1px solid var(--line);
+    }
+
+    h2 {
+      margin: 0 0 6px;
+      font-size: 17px;
+      line-height: 1.35;
+      letter-spacing: 0;
+    }
+
+    .panel-head p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 13px;
+      line-height: 1.5;
+    }
+
+    canvas {
+      display: block;
+      width: 100%;
+      aspect-ratio: 1.16 / 1;
+      background: #fbfcff;
+    }
+
+    .canvas-note {
+      padding: 11px 14px 13px;
+      border-top: 1px solid var(--line);
+      background: #ffffff;
+      color: #374151;
+      font-size: 13px;
+      line-height: 1.55;
+    }
+
+    .canvas-note b {
+      display: block;
+      margin-bottom: 4px;
+      color: var(--ink);
+      font-size: 13px;
+    }
+
+    .canvas-note code {
+      display: block;
+      margin-top: 6px;
+      color: #111827;
+      font-family: Consolas, "Courier New", monospace;
+      white-space: normal;
+    }
+
+    .chain {
+      display: grid;
+      grid-template-columns: 1fr;
+      gap: 9px;
+      margin-top: 8px;
+    }
+
+    .step {
+      position: relative;
+      min-height: 0;
+      padding: 9px 12px;
+      border: 1px solid #dbe3ee;
+      border-radius: 7px;
+      background: #f8fafc;
+    }
+
+    .step:not(:last-child)::after {
+      content: "→";
+      position: absolute;
+      right: 18px;
+      bottom: -14px;
+      z-index: 1;
+      width: 18px;
+      height: 18px;
+      border-radius: 999px;
+      background: #ffffff;
+      color: var(--muted);
+      text-align: center;
+      line-height: 18px;
+      font-weight: 700;
+      transform: rotate(90deg);
+    }
+
+    .step strong {
+      display: block;
+      margin-bottom: 5px;
+      color: var(--ink);
+      font-size: 12px;
+    }
+
+    .step span {
+      display: block;
+      color: #4b5563;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+
+    .step.output {
+      border-color: #b7dbc5;
+      background: #f2fbf5;
+    }
+
+    .step.miss {
+      border-color: #d8cdf5;
+      background: #f7f3ff;
+    }
+
+    .formula {
+      margin-top: 7px;
+      color: #111827;
+      font-family: Consolas, "Courier New", monospace;
+    }
+
+    @media (max-width: 1120px) {
+      .overview,
+      .grid {
+        grid-template-columns: 1fr;
+      }
+
+      canvas {
+        aspect-ratio: 1.7 / 1;
+      }
+
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>圆锥效应、划桨效应、旋转效应：从物理机制到二阶修正</h1>
+    <p class="subtitle">
+      下面不是只画“会动的线”，而是把一个导航更新周期拆成三步：传感器真的经历了什么，简单算法错误地假设了什么，缺失的叉乘项为什么会出现。
+    </p>
+  </header>
+
+  <div class="toolbar">
+    <button id="toggle">暂停</button>
+    <label>速度
+      <input id="speed" type="range" min="0.25" max="2.0" value="0.8" step="0.05">
+      <span id="speedText">0.80x</span>
+    </label>
+    <label>
+      <input id="corrections" type="checkbox" checked>
+      显示修正项
+    </label>
+    <button id="reset">重置</button>
+  </div>
+
+  <main>
+    <div class="overview">
+      <div><b>先分清两个时间尺度</b>IMU 原始采样很快，例如 200 Hz/1000 Hz；导航解算更新较慢，例如每 10 ms 更新一次姿态、速度、位置。一个导航更新周期里通常包含多个 IMU 原始样本。</div>
+      <div><b>再看区别</b>圆锥是角和角的顺序问题；划桨是角振动和线振动的相关问题；旋转是一个周期内 body 系平均方向变化的问题。</div>
+      <div><b>工程位置</b>这些补偿属于 strapdown 机械编排层。先做传感器标定和单位转换，再做增量补偿，最后进入姿态/速度/位置更新。</div>
+    </div>
+
+    <div class="grid">
+      <section>
+        <div class="panel-head">
+          <h2>1. 圆锥效应：为什么 ωz=0 也会漂</h2>
+          <p>两个小角增量绕不同轴发生，旋转乘积不等于把两个角向量直接相加。</p>
+        </div>
+        <canvas id="coning" width="760" height="700"></canvas>
+        <div class="canvas-note">
+          <b>圆锥效应的链式解读</b>
+          <div class="chain">
+            <div class="step">
+              <strong>输入</strong>
+              <span>一个导航更新周期内收到了多次陀螺原始采样。为了说明机制，这里把它们合成两个陀螺子样本角增量：Δθ1、Δθ2。</span>
+            </div>
+            <div class="step">
+              <strong>第一步：真实姿态更新</strong>
+              <span>真实系统在这个更新周期内先经历 Δθ1 对应的小旋转，再经历 Δθ2 对应的小旋转。三维有限旋转有顺序。</span>
+            </div>
+            <div class="step">
+              <strong>第二步：错误简化</strong>
+              <span>简单算法把两次旋转当普通向量相加：Δθsum = Δθ1 + Δθ2，因此认为 z 向没有变化。</span>
+            </div>
+            <div class="step miss">
+              <strong>缺失机制</strong>
+              <span>绕 x 后再绕 y，与绕 y 后再绕 x 不同。这个顺序差异的一阶可见结果沿 Δθ1×Δθ2，也就是第三轴。</span>
+            </div>
+            <div class="step output">
+              <strong>最终输出</strong>
+              <span>补偿后的姿态增量：Δθcorr = Δθ1 + Δθ2 + 2/3(Δθ1×Δθ2)。紫色箭头就是补回来的 z 向小转角。</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="panel-head">
+          <h2>2. 划桨效应：为什么振动会造出横向速度</h2>
+          <p>角振动改变了加速度计增量的方向；线振动与角振动有相位关系时，平均速度方向会偏。</p>
+        </div>
+        <canvas id="sculling" width="760" height="700"></canvas>
+        <div class="canvas-note">
+          <b>划桨效应的链式解读</b>
+          <div class="chain">
+            <div class="step">
+              <strong>输入</strong>
+              <span>同一导航更新周期内，陀螺原始采样合成 Δθ1、Δθ2；加速度计原始采样合成 Δv1、Δv2。Δv 写在正在摆动的 body 系里。</span>
+            </div>
+            <div class="step">
+              <strong>第一步：body 系改变方向</strong>
+              <span>早期 Δv 和晚期 Δv 的数值都在 body 坐标中，但它们对应的导航系方向不同。</span>
+            </div>
+            <div class="step">
+              <strong>第二步：错误简化</strong>
+              <span>简单算法直接累加 Δv1 + Δv2，等价于假设整个周期内 body 系方向不变。</span>
+            </div>
+            <div class="step miss">
+              <strong>缺失机制</strong>
+              <span>角振动与线振动有相位关系时，Δθ×Δv 会产生横向净速度。它不是横向力，而是坐标方向变化导致的平均效果。</span>
+            </div>
+            <div class="step output">
+              <strong>最终输出</strong>
+              <span>补上划桨项：Δvscul = 2/3(Δθ1×Δv2 + Δv1×Δθ2)。右侧绿线表示修正后的速度方向。</span>
+            </div>
+          </div>
+        </div>
+      </section>
+
+      <section>
+        <div class="panel-head">
+          <h2>3. 旋转效应：为什么总 Δv 不能只用旧姿态旋转</h2>
+          <p>一个更新周期内车体持续转弯，早期和晚期的 body 前向对应不同导航系方向。</p>
+        </div>
+        <canvas id="rotation" width="760" height="700"></canvas>
+        <div class="canvas-note">
+          <b>旋转效应的链式解读</b>
+          <div class="chain">
+            <div class="step">
+              <strong>输入</strong>
+              <span>一个导航更新周期内，陀螺原始采样累加出总角增量 Δθ，同时加速度计原始采样累加出总速度增量 Δv。</span>
+            </div>
+            <div class="step">
+              <strong>第一步：Δv 边产生，车体边转</strong>
+              <span>周期开始、中间、结束时的 body 前向不是同一个导航系方向。橙色小箭头表示这些不同时间的方向。</span>
+            </div>
+            <div class="step">
+              <strong>第二步：错误简化</strong>
+              <span>简单算法用旧姿态 Cbn_old 旋转整个 Δv，相当于把所有加速度都放在周期开始的方向。</span>
+            </div>
+            <div class="step miss">
+              <strong>缺失机制</strong>
+              <span>真实积分应该使用周期内平均方向。小角度下，平均方向修正就是 1/2(Δθ×Δv)。</span>
+            </div>
+            <div class="step output">
+              <strong>最终输出</strong>
+              <span>导航系速度增量：Δvn ≈ Cbn_old[Δv + 1/2(Δθ×Δv)]。绿色箭头接近连续积分真值。</span>
+            </div>
+          </div>
+        </div>
+      </section>
+    </div>
+  </main>
+
+  <script>
+    const COLORS = {
+      ink: "#1f2933",
+      muted: "#5b6472",
+      line: "#d8dee8",
+      red: "#c53d4a",
+      blue: "#2f6fb2",
+      green: "#2f855a",
+      orange: "#c66a1f",
+      violet: "#6b46c1",
+      gray: "#7b8794",
+      pale: "#eef3f8"
+    };
+
+    const state = {
+      running: true,
+      speed: 0.8,
+      showCorrections: true,
+      time: 0,
+      last: performance.now()
+    };
+
+    const $ = (id) => document.getElementById(id);
+    const canvases = {
+      coning: $("coning"),
+      sculling: $("sculling"),
+      rotation: $("rotation")
+    };
+
+    $("toggle").addEventListener("click", () => {
+      state.running = !state.running;
+      $("toggle").textContent = state.running ? "暂停" : "播放";
+    });
+
+    $("speed").addEventListener("input", (event) => {
+      state.speed = Number(event.target.value);
+      $("speedText").textContent = `${state.speed.toFixed(2)}x`;
+    });
+
+    $("corrections").addEventListener("change", (event) => {
+      state.showCorrections = event.target.checked;
+    });
+
+    $("reset").addEventListener("click", () => {
+      state.time = 0;
+      state.last = performance.now();
+    });
+
+    function fit(canvas) {
+      const ratio = window.devicePixelRatio || 1;
+      const box = canvas.getBoundingClientRect();
+      const width = Math.max(420, Math.round(box.width * ratio));
+      const height = Math.max(380, Math.round(box.height * ratio));
+      if (canvas.width !== width || canvas.height !== height) {
+        canvas.width = width;
+        canvas.height = height;
+      }
+      const ctx = canvas.getContext("2d");
+      ctx.setTransform(ratio, 0, 0, ratio, 0, 0);
+      return { ctx, w: box.width, h: box.height };
+    }
+
+    function clear(ctx, w, h) {
+      ctx.clearRect(0, 0, w, h);
+      ctx.fillStyle = "#fbfcff";
+      ctx.fillRect(0, 0, w, h);
+    }
+
+    function line(ctx, a, b, color, width = 2, dash = []) {
+      ctx.save();
+      ctx.strokeStyle = color;
+      ctx.lineWidth = width;
+      ctx.setLineDash(dash);
+      ctx.beginPath();
+      ctx.moveTo(a.x, a.y);
+      ctx.lineTo(b.x, b.y);
+      ctx.stroke();
+      ctx.restore();
+    }
+
+    function arrow(ctx, a, b, color, width = 3, label = "") {
+      const dx = b.x - a.x;
+      const dy = b.y - a.y;
+      const angle = Math.atan2(dy, dx);
+      const head = 9;
+      line(ctx, a, b, color, width);
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.moveTo(b.x, b.y);
+      ctx.lineTo(b.x - head * Math.cos(angle - Math.PI / 6), b.y - head * Math.sin(angle - Math.PI / 6));
+      ctx.lineTo(b.x - head * Math.cos(angle + Math.PI / 6), b.y - head * Math.sin(angle + Math.PI / 6));
+      ctx.closePath();
+      ctx.fill();
+      if (label) {
+        ctx.font = "12px Microsoft YaHei, Arial";
+        ctx.fillText(label, b.x + 7, b.y - 7);
+      }
+      ctx.restore();
+    }
+
+    function dot(ctx, p, color, r = 4) {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.beginPath();
+      ctx.arc(p.x, p.y, r, 0, Math.PI * 2);
+      ctx.fill();
+      ctx.restore();
+    }
+
+    function label(ctx, s, x, y, color = COLORS.ink, size = 13, weight = "400") {
+      ctx.save();
+      ctx.fillStyle = color;
+      ctx.font = `${weight} ${size}px Microsoft YaHei, Arial`;
+      ctx.fillText(s, x, y);
+      ctx.restore();
+    }
+
+    function wrap(ctx, lines, x, y, color = COLORS.muted) {
+      lines.forEach((s, i) => label(ctx, s, x, y + i * 18, color, 12));
+    }
+
+    function card(ctx, x, y, w, h, title, lines) {
+      ctx.save();
+      ctx.fillStyle = "#ffffff";
+      ctx.strokeStyle = COLORS.line;
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.roundRect(x, y, w, h, 8);
+      ctx.fill();
+      ctx.stroke();
+      label(ctx, title, x + 12, y + 22, COLORS.ink, 13, "700");
+      wrap(ctx, lines, x + 12, y + 43);
+      ctx.restore();
+    }
+
+    function axes(ctx, o, sx, sy, xName, yName) {
+      arrow(ctx, o, { x: o.x + sx, y: o.y }, COLORS.gray, 1.5, xName);
+      arrow(ctx, o, { x: o.x, y: o.y - sy }, COLORS.gray, 1.5, yName);
+    }
+
+    function project(p, c, s) {
+      return {
+        x: c.x + s * (0.78 * (p.x - p.y)),
+        y: c.y + s * (0.34 * (p.x + p.y) - p.z)
+      };
+    }
+
+    function drawConing(canvas) {
+      const { ctx, w, h } = fit(canvas);
+      clear(ctx, w, h);
+      const t = state.time;
+      const phase = t * 1.5;
+      const c = { x: w * 0.32, y: h * 0.42 };
+      const scale = Math.min(w, h) * 0.24;
+      const cone = 0.38;
+
+      label(ctx, "物理机制：先绕 x 转一点，再绕 y 转一点，结果会多出 z 向小转角。", 18, 30, COLORS.ink, 13, "700");
+
+      for (let i = 0; i < 72; i++) {
+        const a = i / 72 * Math.PI * 2;
+        const b = (i + 1) / 72 * Math.PI * 2;
+        line(ctx, project({ x: cone * Math.cos(a), y: cone * Math.sin(a), z: 1 }, c, scale),
+          project({ x: cone * Math.cos(b), y: cone * Math.sin(b), z: 1 }, c, scale),
+          COLORS.line, 1);
+      }
+      const tip = { x: cone * Math.cos(phase), y: cone * Math.sin(phase), z: 1 };
+      const oldTip = { x: cone * Math.cos(phase - 0.55), y: cone * Math.sin(phase - 0.55), z: 1 };
+      line(ctx, project({ x: 0, y: 0, z: 0 }, c, scale), project(tip, c, scale), COLORS.blue, 4);
+      line(ctx, project({ x: 0, y: 0, z: 0 }, c, scale), project(oldTip, c, scale), COLORS.red, 2, [5, 4]);
+      dot(ctx, project(tip, c, scale), COLORS.blue, 5);
+      label(ctx, "转轴尖端绕锥面扫过", c.x - 88, c.y + scale * 0.95, COLORS.blue, 12);
+
+      const o = { x: w * 0.25, y: h * 0.76 };
+      axes(ctx, o, 82, 82, "Δθx", "Δθy");
+      const d1 = { x: o.x + 76, y: o.y - 10 };
+      const d2 = { x: d1.x + 10, y: d1.y - 70 };
+      const sum = { x: o.x + 86, y: o.y - 80 };
+      arrow(ctx, o, d1, COLORS.red, 3, "1: Δθ1");
+      arrow(ctx, d1, d2, COLORS.blue, 3, "2: Δθ2");
+      arrow(ctx, o, sum, COLORS.gray, 2, "简单相加",);
+      if (state.showCorrections) {
+        const zBase = { x: w * 0.52, y: h * 0.74 };
+        line(ctx, { x: zBase.x, y: zBase.y + 54 }, { x: zBase.x, y: zBase.y - 70 }, COLORS.gray, 1.5);
+        arrow(ctx, zBase, { x: zBase.x, y: zBase.y - 58 }, COLORS.violet, 4, "3: 漏掉的 z 项");
+      }
+
+      label(ctx, "错误假设：Exp(Δθ1)Exp(Δθ2) ≈ Exp(Δθ1+Δθ2)", w * 0.56, h * 0.30, COLORS.gray, 12);
+      label(ctx, "真实补偿：顺序差异产生第三轴叉乘项", w * 0.56, h * 0.37, COLORS.violet, 13, "700");
+    }
+
+    function drawSculling(canvas) {
+      const { ctx, w, h } = fit(canvas);
+      clear(ctx, w, h);
+      const t = state.time;
+      const phase = t * 1.9;
+      const o = { x: w * 0.30, y: h * 0.46 };
+      const pitch = 0.58 * Math.sin(phase);
+      const bx = { x: Math.cos(pitch), y: Math.sin(pitch) };
+      const bz = { x: -Math.sin(pitch), y: Math.cos(pitch) };
+      const p2 = (v, s) => ({ x: o.x + v.x * s, y: o.y - v.y * s });
+
+      label(ctx, "物理机制：加速度计的 Δv 写在 body 系里，但 body 系正在角振动。", 18, 30, COLORS.ink, 13, "700");
+      line(ctx, { x: w * 0.08, y: o.y }, { x: w * 0.52, y: o.y }, COLORS.line, 1);
+      line(ctx, { x: o.x, y: h * 0.20 }, { x: o.x, y: h * 0.70 }, COLORS.line, 1);
+      arrow(ctx, o, p2(bx, 95), COLORS.red, 3, "body x 摆动");
+      arrow(ctx, o, p2(bz, 115), COLORS.blue, 4, "Δv 方向也跟着摆");
+
+      const past = { x: Math.cos(pitch - 0.42), y: Math.sin(pitch - 0.42) };
+      const future = { x: Math.cos(pitch + 0.42), y: Math.sin(pitch + 0.42) };
+      arrow(ctx, { x: o.x - 84, y: o.y + 105 }, { x: o.x - 84 + past.x * 52, y: o.y + 105 - past.y * 52 }, COLORS.gray, 2, "早期");
+      arrow(ctx, { x: o.x - 12, y: o.y + 105 }, { x: o.x - 12 + future.x * 52, y: o.y + 105 - future.y * 52 }, COLORS.gray, 2, "晚期");
+
+      const path0 = [];
+      const path1 = [];
+      for (let i = 0; i < 80; i++) {
+        const u = i / 79;
+        path0.push({ x: w * 0.57 + u * w * 0.34, y: h * 0.72 - 10 * Math.sin(u * 9 + phase) });
+        path1.push({ x: w * 0.57 + u * w * 0.34, y: h * 0.72 - 82 * u - 7 * Math.sin(u * 9 + phase) });
+      }
+      for (let i = 1; i < path0.length; i++) line(ctx, path0[i - 1], path0[i], COLORS.gray, 2);
+      for (let i = 1; i < path1.length; i++) line(ctx, path1[i - 1], path1[i], COLORS.green, 3);
+      label(ctx, "只累加 body Δv：横向平均被漏掉", w * 0.57, h * 0.78, COLORS.gray, 12);
+      label(ctx, "考虑划桨项：出现横向净速度", w * 0.57, h * 0.56, COLORS.green, 12, "700");
+      if (state.showCorrections) {
+        arrow(ctx, { x: w * 0.64, y: h * 0.36 }, { x: w * 0.77, y: h * 0.27 }, COLORS.violet, 4, "Δθ × Δv");
+      }
+
+      label(ctx, "不是横向力突然出现，而是不同时间的 Δv 方向不同", w * 0.07, h * 0.88, COLORS.gray, 12);
+      label(ctx, "相位改变，叉乘项符号也会改变", w * 0.56, h * 0.22, COLORS.violet, 13, "700");
+    }
+
+    function drawRotation(canvas) {
+      const { ctx, w, h } = fit(canvas);
+      clear(ctx, w, h);
+      const t = state.time;
+      const yaw = t * 0.85;
+      const o = { x: w * 0.30, y: h * 0.48 };
+      const bx = { x: Math.cos(yaw), y: Math.sin(yaw) };
+      const by = { x: -Math.sin(yaw), y: Math.cos(yaw) };
+      const p2 = (v, s) => ({ x: o.x + v.x * s, y: o.y - v.y * s });
+
+      label(ctx, "物理机制：一个周期内车体在转弯，body 前向不是固定的导航系方向。", 18, 30, COLORS.ink, 13, "700");
+      ctx.save();
+      ctx.strokeStyle = COLORS.line;
+      ctx.lineWidth = 1.5;
+      ctx.beginPath();
+      ctx.arc(o.x, o.y, 112, 0, Math.PI * 2);
+      ctx.stroke();
+      ctx.restore();
+      arrow(ctx, o, { x: o.x + 100, y: o.y }, COLORS.gray, 1.5, "nav x");
+      arrow(ctx, o, { x: o.x, y: o.y - 100 }, COLORS.gray, 1.5, "nav y");
+      arrow(ctx, o, p2(bx, 106), COLORS.red, 4, "当前 body x");
+      arrow(ctx, o, p2(by, 86), COLORS.blue, 2, "body y");
+
+      for (let i = 0; i < 9; i++) {
+        const a = yaw - 0.72 + i * 0.18;
+        const p = { x: o.x + Math.cos(a) * 68, y: o.y - Math.sin(a) * 68 };
+        arrow(ctx, p, { x: p.x + Math.cos(a) * 31, y: p.y - Math.sin(a) * 31 }, COLORS.orange, 1.8);
+      }
+      label(ctx, "一个周期内多次采样到的前向 Δv", o.x - 112, o.y + 145, COLORS.orange, 12);
+
+      const b = { x: w * 0.58, y: h * 0.64 };
+      axes(ctx, b, 170, 125, "nav x", "nav y");
+      const simple = { x: b.x + 150, y: b.y };
+      const exact = { x: b.x + 150, y: b.y - 68 };
+      const corrected = { x: b.x + 150, y: b.y - 49 };
+      arrow(ctx, b, simple, COLORS.gray, 3, "只用旧姿态");
+      arrow(ctx, b, exact, COLORS.green, 4, "连续积分真值");
+      if (state.showCorrections) {
+        arrow(ctx, b, corrected, COLORS.violet, 3, "平均方向修正");
+      }
+      line(ctx, simple, exact, COLORS.line, 1.5, [4, 4]);
+      label(ctx, "漏掉的是周期内平均方向，而不是随机噪声", w * 0.55, h * 0.78, COLORS.green, 12, "700");
+
+      label(ctx, "错误假设：整个周期内姿态不变", w * 0.57, h * 0.22, COLORS.gray, 12);
+      label(ctx, "真实情况：Δv 产生时，body 系也在转", w * 0.57, h * 0.29, COLORS.violet, 13, "700");
+      label(ctx, "周期越长、转角越大、比力越大，误差越明显", w * 0.08, h * 0.88, COLORS.gray, 12);
+    }
+
+    function frame(now) {
+      const dt = Math.min(0.05, (now - state.last) / 1000);
+      state.last = now;
+      if (state.running) state.time += dt * state.speed;
+      drawConing(canvases.coning);
+      drawSculling(canvases.sculling);
+      drawRotation(canvases.rotation);
+      requestAnimationFrame(frame);
+    }
+
+    window.addEventListener("resize", () => {
+      drawConing(canvases.coning);
+      drawSculling(canvases.sculling);
+      drawRotation(canvases.rotation);
+    });
+
+    requestAnimationFrame(frame);
+  </script>
+</body>
+</html>

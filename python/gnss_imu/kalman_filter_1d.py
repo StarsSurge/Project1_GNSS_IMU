@@ -81,7 +81,8 @@ class KalmanFilter1D:
             S = H @ P @ H^T + R                     — 新息协方差
             K = P @ H^T @ S^{-1}                    — 卡尔曼增益
             x = x + K @ residual                    — 状态修正
-            P = (I - K @ H) @ P                     — 约瑟夫形式协方差更新
+            A = I - K @ H
+            P = A @ P @ A^T + K @ R @ K^T           — Joseph 形式
 
         参数
         ----
@@ -111,9 +112,11 @@ class KalmanFilter1D:
         # 状态修正
         self.x = self.x + K @ residual
 
-        # 约瑟夫形式协方差更新（保证对称正定）
+        # Joseph 形式在浮点运算中更好地保持对称性和半正定性。
         I = np.eye(self.P.shape[0])
-        self.P = (I - K @ self.H) @ self.P
+        A = I - K @ self.H
+        self.P = A @ self.P @ A.T + K @ self.R @ K.T
+        self.P = 0.5 * (self.P + self.P.T)
         return self.x, self.P, K, residual
 
     def step(self, z: Array) -> tuple[Array, Array, Array, Array]:

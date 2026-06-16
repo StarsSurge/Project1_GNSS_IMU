@@ -46,8 +46,13 @@ residual = z - H x_pred
 S = H P_pred Hᵀ + R
 K = P_pred Hᵀ S⁻¹
 x_upd = x_pred + K residual
-P_upd = (I - K H) P_pred
+A = I - K H
+P_upd = A P_pred Aᵀ + K R Kᵀ
 ```
+
+The final line is the Joseph covariance update. With the exact optimal
+Kalman gain it is algebraically equivalent to ``(I - K H) P_pred``, but
+its symmetric structure is more robust to floating-point round-off.
 
 The code uses ``np.linalg.solve`` for the Kalman gain:
 

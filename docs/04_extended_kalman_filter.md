@@ -69,12 +69,18 @@ P_pred = F P Fᵀ + Q             (linearised covariance propagation)
 
 ```text
 z_pred = h(x_pred)              (predicted measurement)
-residual = z - z_pred           (innovation)
+residual = residual_fn(z, z_pred) (innovation)
 S = H P_pred Hᵀ + R             (innovation covariance)
 K = P_pred Hᵀ S⁻¹               (Kalman gain)
 x_upd = x_pred + K residual     (state correction)
-P_upd = (I - K H) P_pred        (Joseph-form covariance)
+A = I - K H
+P_upd = A P_pred Aᵀ + K R Kᵀ   (Joseph covariance update)
 ```
+
+For Euclidean measurements, ``residual_fn(z, z_pred) = z - z_pred``.
+Periodic measurements need a manifold-aware residual. In this example,
+the bearing residual is wrapped to ``[-π, π)`` so equivalent angles on
+opposite sides of the branch cut remain close.
 
 ## Range-Bearing Observation Model
 
@@ -124,6 +130,7 @@ The EKF requires four user-supplied callables:
 | ``F_jac(x)`` | ``(n,1) → (n,n)`` | Jacobian of ``f`` |
 | ``h(x)`` | ``(n,1) → (m,1)`` | Non-linear observation |
 | ``H_jac(x)`` | ``(n,1) → (m,n)`` | Jacobian of ``h`` |
+| ``residual_fn(z, z_pred)`` | ``(m,1), (m,1) → (m,1)`` | Optional non-Euclidean innovation |
 
 Factory function: ``create_range_bearing_ekf()`` — builds an EKF for
 2D range-bearing tracking with sensible defaults.
@@ -175,8 +182,8 @@ linearly).  This is the standard approach for GNSS/IMU fusion because:
 - Under what conditions does the EKF diverge?
 - How does the EKF compare to the Unscented Kalman Filter (UKF)?
   What about particle filters?
-- Why is the Joseph form ``(I - KH) P`` preferred for the covariance
-  update?
+- Why is the Joseph form ``A P Aᵀ + K R Kᵀ`` preferred over the
+  simplified ``(I - KH) P`` update?
 - In the range-bearing example, why is bearing noise more damaging at
   long range?
 - What happens to the Jacobian when the target is exactly at the
@@ -190,6 +197,7 @@ linearly).  This is the standard approach for GNSS/IMU fusion because:
   step.
 - Not checking that ``h(x)`` and ``z`` have the same dimension.
 - Using ``arctan2`` without checking the quadrant convention.
+- Subtracting periodic angles directly without wrapping the residual.
 - Forgetting the chain rule when computing ``F_jac`` for a composition
   of transformations.
 - Setting ``R`` too small — the EKF trusts bad linearisation-based

@@ -1,5 +1,9 @@
 # Error-State Kalman Filter (ESKF) — GNSS/IMU Loose Coupling
 
+> The MVP implementation follows the frozen right-multiplicative,
+> body-frame attitude-error convention in
+> [06_eskf_mvp_spec.md](06_eskf_mvp_spec.md).
+
 ## Problem Definition
 
 In GNSS/IMU integration we have two complementary sensors:
@@ -85,7 +89,7 @@ Five noise types identified by Allan variance:
 
 | Noise Type | Allan Slope | Physical Meaning | Variance in Q_d |
 |-----------|:--:|------|------|
-| **ARW / VRW** (white noise) | −1/2 | High-frequency random jitter, integrated | σ²·I·dt² |
+| **ARW / VRW** (white noise) | −1/2 | High-frequency random jitter, integrated | continuous PSD σ²; first-order Qd multiplies by dt |
 | **Bias Instability** | 0 | Slow bias drift magnitude over time | Modelled via σ_ba²·I·dt |
 | **Rate Random Walk** | +1/2 | Random walk driving the bias itself | σ²·I·dt |
 | **Rate Ramp** | +1 | Ultra-slow deterministic drift (ageing) | Usually ignored |
@@ -206,8 +210,8 @@ For down-sampled processing (e.g. 100 Hz), two-subsample is required.
 
 ```
 δṗ  = δv
-δv̇  = −C_b^n·[Δv×]·δθ  + C_b^n·δb_a  + C_b^n·n_a     ← attitude→velocity coupling is dominant
-δθ̇  = −C_b^n·δb_g       − C_b^n·n_g
+δv̇  = −C_b^n·[f_b×]·δθ − C_b^n·δb_a − C_b^n·n_a
+δθ̇  = −[ω_b×]·δθ − δb_g − n_g
 δḃ_a = n_ba
 δḃ_g = n_bg
 ```
@@ -217,14 +221,14 @@ For down-sampled processing (e.g. 100 Hz), two-subsample is required.
 ```
      ┌                            ┐
      │ 0     I₃    0     0     0 │  ← δṗ = δv
-F =  │ 0     0   −C[Δv×]  C     0 │  ← δv̇ = −C[Δv×]δθ + C·δb_a
-     │ 0     0     0     0    −C │  ← δθ̇ = −C·δb_g
+F =  │ 0     0   −C[f×]   −C     0 │
+     │ 0     0   −[ω×]     0    −I │
      │ 0     0     0     0     0 │  ← δḃ_a = 0
      │ 0     0     0     0     0 │  ← δḃ_g = 0
      └                            ┘
 ```
 
-Block (1,2) `−C[Δv×]` is the dominant term: attitude error → wrong gravity
+Block (1,2) `−C[f_b×]` is the dominant term: attitude error → wrong gravity
 compensation direction → velocity drifts linearly in time → position drifts quadratically.
 
 ### G Matrix — 15×12 Block Structure
@@ -232,8 +236,8 @@ compensation direction → velocity drifts linearly in time → position drifts 
 ```
      ┌                      ┐
      │ 0     0    0    0  │
-G =  │ C     0    0    0  │  ← accel noise → velocity
-     │ 0    −C    0    0  │  ← gyro noise → attitude
+G =  │−C     0    0    0  │  ← accel noise → velocity
+     │ 0    −I    0    0  │  ← gyro noise → body-frame attitude
      │ 0     0    I₃   0  │  ← accel bias random walk
      │ 0     0    0    I₃ │  ← gyro bias random walk
      └                     ┘
@@ -263,8 +267,8 @@ P_pred = Φ @ P @ Φᵀ + G @ Q_d @ Gᵀ
 
 ```
 δṗ  = δv
-δv̇  = -C_b^n [Δv×] δθ + C_b^n δb_a + C_b^n n_a
-δθ̇  = -C_b^n δb_g - C_b^n n_g
+δv̇  = -C_b^n [f_b×] δθ - C_b^n δb_a - C_b^n n_a
+δθ̇  = -[ω_b×]δθ - δb_g - n_g
 δḃ_a = n_ba
 δḃ_g = n_bg
 ```
@@ -276,8 +280,8 @@ In matrix form:  **δẋ = F·δx + G·n_imu**
 ```
      ┌                            ┐
      │ 0     I     0     0     0 │  ← δṗ
-     │ 0     0  -C[Δv×]  C     0 │  ← δv̇
-F =  │ 0     0     0     0    -C │  ← δθ̇
+     │ 0     0  -C[f×]   -C     0 │  ← δv̇
+F =  │ 0     0   -[ω×]    0    -I │  ← δθ̇
      │ 0     0     0     0     0 │  ← δḃ_a
      │ 0     0     0     0     0 │  ← δḃ_g
      └                            ┘
@@ -285,9 +289,10 @@ F =  │ 0     0     0     0    -C │  ← δθ̇
 Each block is 3×3:
 
 Block (0,1) = I₃          — position error grows with velocity error
-Block (1,2) = -C[Δv×]     — velocity error couples to attitude error ("specific force coupling")
-Block (1,3) = C            — velocity error grows with accel bias
-Block (2,4) = -C           — attitude error grows with gyro bias
+Block (1,2) = -C[f_b×]     — specific-force coupling
+Block (1,3) = -C           — velocity error grows with accel bias
+Block (2,2) = -[ω_b×]      — body-frame attitude-error rotation
+Block (2,4) = -I           — attitude error grows with gyro bias
 ```
 
 ### G matrix — 15×12 block structure
@@ -295,8 +300,8 @@ Block (2,4) = -C           — attitude error grows with gyro bias
 ```
      ┌                      ┐
      │ 0    0    0    0  │
-     │ C    0    0    0  │   ← accel noise enters velocity channel
-G =  │ 0   -C    0    0  │   ← gyro noise enters attitude channel
+     │-C    0    0    0  │   ← accel noise enters velocity channel
+G =  │ 0   -I    0    0  │   ← gyro noise enters attitude channel
      │ 0    0    I    0  │   ← bias random walk for accel
      │ 0    0    0    I  │   ← bias random walk for gyro
      └                    ┘
@@ -313,12 +318,8 @@ P_pred = Φ @ P @ Φ^T + G @ Q_d @ G^T
 Where `Q_d` (12×12) contains the discrete-time process noise:
 
 ```
-Q_d = diag(
-    σ_a²·I₃·dt²,       — accelerometer white noise
-    σ_g²·I₃·dt²,       — gyroscope white noise
-    σ_ba²·I₃·dt,       — accel bias random walk
-    σ_bg²·I₃·dt        — gyro bias random walk
-)
+Q_c = diag(σ_a²·I₃, σ_g²·I₃, σ_ba²·I₃, σ_bg²·I₃)
+Q_d = Q_c·dt
 ```
 
 ---
@@ -342,7 +343,8 @@ S = H @ P @ H^T + R_gnss
 K = P @ H^T @ S^{-1}               (15×3)
 
 δx = K @ residual
-P = (I - KH) @ P                   (Joseph form)
+A = I - K @ H
+P = A @ P @ A.T + K @ R @ K.T     (Joseph form)
 ```
 
 ---
@@ -401,7 +403,8 @@ For each IMU epoch (dθ, dv):
     │ ⑥ H = [I₃, 0₃, 0₃, 0₃, 0₃]              │
     │    K = P @ H^T @ S^{-1}                   │
     │ ⑦ δx = K @ residual                      │
-    │    P = (I - KH) @ P                       │
+    │    A = I - K @ H                          │
+    │    P = A @ P @ A.T + K @ R @ K.T         │
     │ ⑧ inject error into nominal; reset δx = 0 │
     └───────────────────────────────────────────┘
 
@@ -428,7 +431,7 @@ For each IMU epoch (dθ, dv):
 - Why is ESKF better than directly EKF-ing the full state?
 - The nominal state is 16-D but the error state is 15-D.  Where did the extra DOF go?
 - Why must the error state be reset to zero after injection?  What happens if you don't?
-- What is the physical meaning of the `-C[Δv×]` block in the F matrix?
+- What is the physical meaning of the `-C[f_b×]` block in the F matrix?
 - If GNSS is lost for an extended period (e.g. tunnel), how does P evolve?
   What is the drift characteristic of pure INS?
 - Why are b_a and b_g modelled as random walks (ḃ = n) rather than
@@ -440,7 +443,8 @@ For each IMU epoch (dθ, dv):
 
 - Reusing a stale DCM C instead of recomputing it each IMU step
 - Adding the attitude error δθ to the quaternion instead of quaternion-multiplying
-- Forgetting the minus sign on `-C` in the F matrix
+- Mixing left/nav-frame and right/body-frame attitude-error equations
+- Using the wrong sign for the bias blocks in F
 - Using Δv directly as acceleration and forgetting to account for dt
 - Subtracting NED position from WGS84 lat/lon/alt without coordinate conversion
 - Getting the gravity sign wrong: +g (down) in NED vs −g (up) in ENU

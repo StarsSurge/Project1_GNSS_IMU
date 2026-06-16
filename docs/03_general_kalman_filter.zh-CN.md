@@ -39,8 +39,12 @@ residual = z - H x_pred
 S = H P_pred Hᵀ + R
 K = P_pred Hᵀ S⁻¹
 x_upd = x_pred + K residual
-P_upd = (I - K H) P_pred
+A = I - K H
+P_upd = A P_pred Aᵀ + K R Kᵀ
 ```
+
+最后一行是真正的 Joseph 协方差更新。在精确最优卡尔曼增益下，它与
+``(I - K H) P_pred`` 代数等价，但其对称结构对浮点舍入误差更稳健。
 
 代码中使用 ``np.linalg.solve`` 计算卡尔曼增益：
 

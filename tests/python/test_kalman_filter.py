@@ -47,6 +47,23 @@ def test_1d_step_matches_reference() -> None:
     assert np.allclose(x_upd, [[1.02387807], [0.96858594]])
 
 
+def test_update_uses_joseph_covariance_form() -> None:
+    """协方差更新应与 Joseph 形式的直接计算一致。"""
+    kf = create_constant_velocity_filter_1d(dt=1.0)
+    kf.predict()
+    P_pred = kf.P.copy()
+    H = kf.H.copy()
+    R = kf.R.copy()
+
+    _, P_upd, K, _ = kf.update(np.array([[1.2], [0.9]]))
+
+    A = np.eye(kf.state_dim) - K @ H
+    expected = A @ P_pred @ A.T + K @ R @ K.T
+    np.testing.assert_allclose(P_upd, expected)
+    np.testing.assert_allclose(P_upd, P_upd.T)
+    assert np.linalg.eigvalsh(P_upd).min() >= -1e-12
+
+
 # ══════════════════════════════════════════════════════════════════
 # 2D 工厂函数验证
 # ══════════════════════════════════════════════════════════════════

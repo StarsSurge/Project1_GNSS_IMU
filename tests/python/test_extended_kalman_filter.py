@@ -16,6 +16,7 @@ from gnss_imu.extended_kalman_filter import (
     cv_predict,            # 恒定速度状态转移
     range_bearing_h,       # 距离-方位角观测函数
     range_bearing_H_jac,   # 距离-方位角解析雅可比
+    range_bearing_residual,
 )
 
 
@@ -76,6 +77,34 @@ def test_range_bearing_H_jac_near_sensor() -> None:
     x = np.array([[0.0], [0.0], [1.0], [0.5]])
     H = range_bearing_H_jac(x, sensor_pos=(0.0, 0.0))
     assert np.allclose(H, 0.0)
+
+
+def test_range_bearing_residual_wraps_across_pi() -> None:
+    """跨越 ±pi 分支时，方位角新息应选择最短角距离。"""
+    z = np.array([[10.0], [np.pi - 0.001]])
+    z_pred = np.array([[10.0], [-np.pi + 0.001]])
+
+    residual = range_bearing_residual(z, z_pred)
+
+    np.testing.assert_allclose(residual, [[0.0], [-0.002]], atol=1e-12)
+
+
+def test_ekf_update_is_stable_across_bearing_wrap() -> None:
+    """接近负 x 轴时，等价方位角不能触发巨大状态修正。"""
+    ekf = create_range_bearing_ekf(
+        initial_position=(-10.0, -0.01),
+        initial_velocity=(0.0, 0.0),
+        initial_covariance=1.0,
+        measurement_noise_range=0.1,
+        measurement_noise_bearing=0.01,
+    )
+    x_before = ekf.x.copy()
+    z = np.array([[np.hypot(10.0, 0.01)], [np.pi - 0.001]])
+
+    x_upd, _, _, residual = ekf.update(z)
+
+    assert abs(residual[1, 0]) < 0.01
+    assert np.linalg.norm(x_upd[:2] - x_before[:2]) < 0.1
 
 
 def test_cv_F_jac_is_constant() -> None:

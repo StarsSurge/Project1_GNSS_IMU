@@ -102,8 +102,11 @@ y = z - h(x_hat)
 S = H P H^T + R
 K = P H^T S^-1
 delta_x = K y
-P = (I - K H) P
+P = (I - K H) P       (simplified covariance update)
 ```
+
+Engineering implementations often use the Joseph form
+``A P Aᵀ + K R Kᵀ``, ``A = I - K H``, for better numerical robustness.
 
 For ESKF, `delta_x` is injected into the nominal state, then the error state is reset to zero.
 

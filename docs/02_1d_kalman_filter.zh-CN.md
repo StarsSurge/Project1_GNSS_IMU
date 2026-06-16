@@ -67,8 +67,12 @@ residual = z - H x_pred
 S = H P_pred H^T + R
 K = P_pred H^T S^{-1}
 x_upd = x_pred + K residual
-P_upd = (I - K H) P_pred
+P_upd = (I - K H) P_pred       （简化协方差更新）
 ```
+
+代码实现使用数值上更稳健的 Joseph 形式
+``A P_pred Aᵀ + K R Kᵀ``，其中 ``A = I - K H``。使用精确最优增益时，
+两种形式在代数上等价。
 
 代码中为了数值稳定性，`K` 使用 `np.linalg.solve` 计算，而不是显式构造 `S^{-1}`。
 

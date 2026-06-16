@@ -13,7 +13,9 @@ import pytest
 
 from gnss_imu.imu_allan import (
     allan_deviation,
+    extract_allan_parameters,
     load_imu_rate_csv,
+    load_imu_rate_feather,
     overlapping_allan_deviation,
     validate_uniform_sampling,
 )
@@ -106,6 +108,79 @@ def test_load_increment_csv_divides_by_each_interval(tmp_path: Path) -> None:
     np.testing.assert_allclose(rates[:, 0], [1.0, 2.0, 3.0])
 
 
+def test_integer_epoch_timestamps_preserve_nanosecond_intervals(
+    tmp_path: Path,
+) -> None:
+    csv_path = tmp_path / "epoch.csv"
+    origin = 1_660_100_288_344_525_469
+    write_csv(
+        csv_path,
+        [
+            "timestamp_ns,gx",
+            f"{origin},0.0",
+            f"{origin + 2_500_000},0.1",
+            f"{origin + 5_000_000},0.2",
+            f"{origin + 7_500_000},0.3",
+        ],
+    )
+    timestamps, _, statistics = load_imu_rate_csv(
+        csv_path,
+        timestamp_column="timestamp_ns",
+        value_columns=("gx",),
+        timestamp_scale_to_seconds=1e-9,
+    )
+
+    np.testing.assert_allclose(timestamps, [0.0, 0.0025, 0.005, 0.0075])
+    assert statistics["sample_rate_hz"] == pytest.approx(400.0)
+
+
+def test_load_feather_columns_and_units(tmp_path: Path) -> None:
+    pyarrow = pytest.importorskip("pyarrow")
+    feather = pytest.importorskip("pyarrow.feather")
+    table = pyarrow.table({
+        "timestamp_ns": np.array(
+            [1_000_000_000, 1_010_000_000, 1_020_000_000, 1_030_000_000],
+            dtype=np.int64,
+        ),
+        "gx": np.array([1.0, 2.0, 3.0, 4.0]),
+        "gy": np.array([-1.0, -2.0, -3.0, -4.0]),
+    })
+    path = tmp_path / "imu.feather"
+    feather.write_feather(table, path)
+
+    timestamps, rates, statistics = load_imu_rate_feather(
+        path,
+        timestamp_column="timestamp_ns",
+        value_columns=("gx", "gy"),
+        timestamp_scale_to_seconds=1e-9,
+        value_scale_to_si=0.5,
+    )
+
+    np.testing.assert_allclose(timestamps, [0.0, 0.01, 0.02, 0.03])
+    np.testing.assert_allclose(rates[0], [0.5, -0.5])
+    assert statistics["sample_rate_hz"] == pytest.approx(100.0)
+
+
+def test_extract_allan_parameters_uses_documented_conversions() -> None:
+    taus = np.logspace(-2, 2, 100)
+    white_coefficient = 0.03
+    deviations = white_coefficient / np.sqrt(taus)
+    parameters = extract_allan_parameters(
+        taus,
+        deviations,
+        white_fit_range=(0.01, 1.0),
+    )
+
+    white = parameters["white_noise"]
+    assert white["slope"] == pytest.approx(-0.5)
+    assert white["coefficient"] == pytest.approx(white_coefficient)
+    assert white["continuous_psd"] == pytest.approx(
+        white_coefficient**2
+    )
+    assert white["is_valid"]
+    assert parameters["rate_random_walk"] is None
+
+
 def test_load_csv_rejects_missing_columns_and_nonfinite_values(
     tmp_path: Path,
 ) -> None:
@@ -172,6 +247,10 @@ def test_real_csv_cli_writes_auditable_outputs(tmp_path: Path) -> None:
 
     assert (output_dir / "allan_deviation.csv").is_file()
     assert (output_dir / "allan_deviation.png").is_file()
+    assert (output_dir / "allan_parameter_summary.png").is_file()
+    assert (output_dir / "allan_difference_pairs.png").is_file()
+    assert (output_dir / "allan_parameters.csv").is_file()
+    assert (output_dir / "allan_parameter_report.zh-CN.md").is_file()
     metadata = json.loads(
         (output_dir / "analysis_metadata.json").read_text(encoding="utf-8")
     )
