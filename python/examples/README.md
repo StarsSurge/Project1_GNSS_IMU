@@ -11,6 +11,8 @@ Available examples:
   CSV/Feather data, with parameter tables and an auditable report
 - `visualize_dataset1.py`: first-pass RTK, IMU increment, and truth
   visualization for `data/dataset1`
+- `demo_imu_state_update_mvp.py`: scaffold for hand-writing the first
+  two-sample IMU nominal state update prototype
 
 Run from the repository root:
 
@@ -55,6 +57,17 @@ does not automatically detect motion, saturation, temperature transients, or
 outliers; these must be checked before interpreting the result.
 
 GNSS/IMU mechanization and ESKF demos are the next planned examples.
+
+IMU state-update MVP scaffold:
+
+```powershell
+$env:PYTHONPATH = "$PWD\python"
+.\.venv\Scripts\python.exe python\examples\demo_imu_state_update_mvp.py
+```
+
+The scaffold prepares a known static initial state and two static IMU increment
+samples.  The propagation function intentionally raises `NotImplementedError`
+until you fill in the TODO steps.
 
 Dataset1 visualization:
 
