@@ -25,10 +25,13 @@ from gnss_imu import (  # noqa: E402
     IMUNoiseModel,
     LooselyCoupledESKF,
     TimedIMUIncrement,
+    StaticAlignmentConfig,
+    apply_ned_position_delta,
     default_initial_covariance,
     euler_zyx_to_quat,
     geodetic_to_ned,
     load_dataset1,
+    initialize_from_static_imu,
     quat_to_dcm,
     rpy_deg_to_body_to_ned,
 )
@@ -58,6 +61,24 @@ def parse_args() -> argparse.Namespace:
         "--imu-profile",
         choices=("mems", "navigation-grade"),
         default="navigation-grade",
+    )
+    parser.add_argument(
+        "--initialization",
+        choices=("truth", "gyrocompass", "external-yaw"),
+        default="gyrocompass",
+        help="Initialization source. 'truth' is evaluation-only.",
+    )
+    parser.add_argument(
+        "--initial-yaw-deg",
+        type=float,
+        default=None,
+        help="Required by --initialization external-yaw.",
+    )
+    parser.add_argument(
+        "--alignment-duration-s",
+        type=float,
+        default=30.0,
+        help="Static IMU window before truth evaluation start.",
     )
     parser.add_argument(
         "--lever-arm-b-m",
@@ -91,6 +112,134 @@ def _interpolate_truth(data, query_time_s: np.ndarray) -> dict[str, np.ndarray]:
     }
 
 
+def _build_initial_state(
+    data,
+    args: argparse.Namespace,
+    config: ESKFConfig,
+    evaluation_start_s: float,
+) -> tuple[ESKFState, dict[str, object], int | None]:
+    """Create the initial state and return the GNSS row consumed by it."""
+    mode = getattr(args, "initialization", "truth")
+    truth = data.truth
+    if mode == "truth":
+        state = ESKFState(
+            time_s=evaluation_start_s,
+            latitude_rad=np.deg2rad(truth.latitude_deg[0]),
+            longitude_rad=np.deg2rad(truth.longitude_deg[0]),
+            height_m=float(truth.height_m[0]),
+            velocity_ned_mps=truth.velocity_ned_mps[0],
+            q_bn=euler_zyx_to_quat(*truth.attitude_rpy_deg[0], degrees=True),
+            accel_bias_mps2=np.zeros(3),
+            gyro_bias_rps=np.zeros(3),
+            covariance=default_initial_covariance(
+                position_std_m=0.1,
+                velocity_std_mps=0.05,
+                attitude_std_deg=0.2,
+                accel_bias_std_mps2=0.02,
+                gyro_bias_std_deg_s=0.005,
+            ),
+        )
+        return (
+            state,
+            {
+                "mode": "truth",
+                "note": "evaluation-only truth-assisted initialization",
+            },
+            None,
+        )
+
+    if mode == "gyrocompass" and args.imu_profile == "mems":
+        raise ValueError(
+            "MEMS profile must use external-yaw; static gyrocompass is not "
+            "declared observable for this profile"
+        )
+    if mode == "external-yaw" and getattr(args, "initial_yaw_deg", None) is None:
+        raise ValueError("external-yaw initialization requires --initial-yaw-deg")
+    alignment_duration = float(getattr(args, "alignment_duration_s", 30.0))
+    if not np.isfinite(alignment_duration) or alignment_duration < 5.0:
+        raise ValueError("alignment_duration_s must be finite and at least 5 s")
+
+    imu_indices = np.flatnonzero(
+        (data.imu.time_s < evaluation_start_s)
+        & (data.imu.time_s >= evaluation_start_s - alignment_duration)
+    )
+    imu_indices = imu_indices[imu_indices > 0]
+    if imu_indices.size < 2:
+        raise ValueError("no usable pre-start IMU alignment window")
+    alignment_samples = [
+        TimedIMUIncrement(
+            float(data.imu.time_s[index]),
+            data.imu.delta_angle_rad[index],
+            data.imu.delta_velocity_mps[index],
+            float(data.imu.time_s[index] - data.imu.time_s[index - 1]),
+        )
+        for index in imu_indices
+    ]
+
+    gnss_index = int(
+        np.searchsorted(data.rtk.time_s, evaluation_start_s, side="right") - 1
+    )
+    if gnss_index < 0:
+        raise ValueError("no GNSS position is available for initialization")
+    position_std = data.rtk.std_ned_m[gnss_index]
+    covariance = default_initial_covariance(
+        position_std_m=float(np.max(position_std)),
+        velocity_std_mps=0.05,
+        attitude_std_deg=(2.0 if mode == "gyrocompass" else 1.0),
+        accel_bias_std_mps2=0.03,
+        gyro_bias_std_deg_s=0.01,
+    )
+    covariance[0:3, 0:3] = np.diag(position_std**2)
+    alignment = initialize_from_static_imu(
+        alignment_samples,
+        latitude_rad=np.deg2rad(data.rtk.latitude_deg[gnss_index]),
+        longitude_rad=np.deg2rad(data.rtk.longitude_deg[gnss_index]),
+        height_m=float(data.rtk.height_m[gnss_index]),
+        yaw_rad=(
+            None
+            if mode == "gyrocompass"
+            else np.deg2rad(float(args.initial_yaw_deg))
+        ),
+        use_gyrocompass=(mode == "gyrocompass"),
+        covariance=covariance,
+        config=StaticAlignmentConfig(
+            min_samples=400,
+            min_duration_s=max(5.0, 0.8 * alignment_duration),
+        ),
+    )
+    state = alignment.state
+    # GNSS is at the antenna; convert the initialized position to the IMU point.
+    lever_n = quat_to_dcm(state.q_bn) @ config.gnss_lever_arm_b_m
+    lat, lon, height = apply_ned_position_delta(
+        state.latitude_rad,
+        state.longitude_rad,
+        state.height_m,
+        -lever_n,
+    )
+    state.latitude_rad = lat
+    state.longitude_rad = lon
+    state.height_m = height
+    diagnostic = alignment.diagnostics
+    metadata = {
+        "mode": mode,
+        "gnss_time_s": float(data.rtk.time_s[gnss_index]),
+        "alignment_start_s": float(alignment_samples[0].time_s),
+        "alignment_end_s": float(alignment_samples[-1].time_s),
+        "sample_count": diagnostic.sample_count,
+        "duration_s": diagnostic.duration_s,
+        "yaw_source": diagnostic.yaw_source,
+        "estimated_rpy_deg": [
+            diagnostic.roll_deg,
+            diagnostic.pitch_deg,
+            diagnostic.yaw_deg,
+        ],
+        "gyro_std_rps": diagnostic.gyro_std_rps.tolist(),
+        "accel_std_mps2": diagnostic.accel_std_mps2.tolist(),
+        "gravity_norm_error_mps2": diagnostic.gravity_norm_error_mps2,
+    }
+    return state, metadata, gnss_index
+
+
 def _write_outputs(
     output_dir: Path,
     history: dict[str, list],
@@ -98,6 +247,7 @@ def _write_outputs(
     eskf: LooselyCoupledESKF,
     skipped_gnss: int,
     profile_name: str,
+    initialization_metadata: dict[str, object],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     times = np.asarray(history["time_s"])
@@ -181,7 +331,7 @@ def _write_outputs(
     velocity_rms = np.sqrt(np.mean(velocity_error**2, axis=0))
     summary = {
         "maturity": "verified MVP / production-oriented baseline",
-        "initialization": "truth-assisted for dataset evaluation only",
+        "initialization": initialization_metadata,
         "imu_profile": profile_name,
         "duration_s": float(times[-1] - times[0]),
         "navigation_epochs": int(times.size),
@@ -193,8 +343,8 @@ def _write_outputs(
         "velocity_rms_ned_mps": velocity_rms.tolist(),
         "attitude_error_rms_deg": float(np.sqrt(np.mean(attitude_error_deg**2))),
         "limitations": [
-            "No online coarse/fine alignment; replay starts from truth state.",
-            "No scale-factor, non-orthogonality, temperature, or vibration-rectification model.",
+            "Static alignment is window-based; online window search and fine alignment are not implemented.",
+            "Known calibration matrices are supported; online scale-factor, temperature, and vibration-rectification models are not.",
             "GNSS updates use nearest propagated epoch within the configured tolerance; no delayed-state rewind.",
             "Noise profiles are starting points and must be replaced by calibrated device parameters.",
             "Python implementation is for offline verification, not certified hard real-time deployment.",
@@ -246,22 +396,11 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         imu_noise=noise,
         gnss_lever_arm_b_m=np.asarray(args.lever_arm_b_m, dtype=float),
     )
-    state = ESKFState(
-        time_s=start_time,
-        latitude_rad=np.deg2rad(truth.latitude_deg[0]),
-        longitude_rad=np.deg2rad(truth.longitude_deg[0]),
-        height_m=float(truth.height_m[0]),
-        velocity_ned_mps=truth.velocity_ned_mps[0],
-        q_bn=euler_zyx_to_quat(*truth.attitude_rpy_deg[0], degrees=True),
-        accel_bias_mps2=np.zeros(3),
-        gyro_bias_rps=np.zeros(3),
-        covariance=default_initial_covariance(
-            position_std_m=0.1,
-            velocity_std_mps=0.05,
-            attitude_std_deg=0.2,
-            accel_bias_std_mps2=0.02,
-            gyro_bias_std_deg_s=0.005,
-        ),
+    state, initialization_metadata, consumed_gnss_index = _build_initial_state(
+        data,
+        args,
+        config,
+        start_time,
     )
     eskf = LooselyCoupledESKF(state, config)
 
@@ -282,8 +421,9 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         history["gyro_bias_rps"].append(eskf.state.gyro_bias_rps.copy())
         history["covariance_std"].append(np.sqrt(np.diag(eskf.state.covariance)))
 
-    record_state()
-    imu_start = int(np.searchsorted(data.imu.time_s, start_time, side="left"))
+    imu_start = int(
+        np.searchsorted(data.imu.time_s, eskf.state.time_s, side="left")
+    )
     # A row timestamp marks the end of its increment.  Skip any row whose
     # integration interval starts before the initialized state epoch, even if
     # floating-point timestamp text differs by only a few nanoseconds.
@@ -295,13 +435,35 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
             data.imu.time_s[imu_start] - data.imu.time_s[imu_start - 1]
         )
         candidate_start = data.imu.time_s[imu_start] - candidate_dt
-        if candidate_start >= start_time - 1e-6:
+        if candidate_start >= eskf.state.time_s - 1e-6:
             break
         imu_start += 1
-    gnss_index = int(np.searchsorted(data.rtk.time_s, start_time, side="right"))
+    gnss_index = (
+        consumed_gnss_index + 1
+        if consumed_gnss_index is not None
+        else int(np.searchsorted(data.rtk.time_s, start_time, side="right"))
+    )
     skipped_gnss = 0
 
     imu_index = imu_start
+    if eskf.state.time_s < start_time - 1e-6:
+        time_single = float(data.imu.time_s[imu_index])
+        dt_single = time_single - float(data.imu.time_s[imu_index - 1])
+        eskf.predict_single_sample(
+            TimedIMUIncrement(
+                time_single,
+                data.imu.delta_angle_rad[imu_index],
+                data.imu.delta_velocity_mps[imu_index],
+                dt_single,
+            )
+        )
+        imu_index += 1
+        if eskf.state.time_s < start_time - 1e-6:
+            raise ValueError(
+                "one boundary IMU sample did not reach the evaluation start"
+            )
+    record_state()
+
     while imu_index + 1 < data.imu.time_s.size:
         time1 = float(data.imu.time_s[imu_index])
         time2 = float(data.imu.time_s[imu_index + 1])
@@ -350,11 +512,13 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         eskf,
         skipped_gnss,
         args.imu_profile,
+        initialization_metadata,
     )
     return {
         "eskf": eskf,
         "history": history,
         "skipped_gnss": skipped_gnss,
+        "initialization": initialization_metadata,
     }
 
 

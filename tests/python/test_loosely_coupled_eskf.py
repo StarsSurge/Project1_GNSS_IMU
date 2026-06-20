@@ -85,6 +85,25 @@ def test_static_earth_fixed_state_remains_nearly_stationary() -> None:
     )
 
 
+def test_single_sample_boundary_propagation_preserves_static_state() -> None:
+    state = make_state()
+    eskf = LooselyCoupledESKF(state)
+    omega_ie_b = earth_rate_ned(state.latitude_rad)
+    gravity = normal_gravity_mps2(state.latitude_rad, state.height_m)
+
+    eskf.predict_single_sample(
+        TimedIMUIncrement(
+            0.005,
+            omega_ie_b * 0.005,
+            [0.0, 0.0, -gravity * 0.005],
+            0.005,
+        )
+    )
+
+    np.testing.assert_allclose(eskf.state.velocity_ned_mps, 0.0, atol=1e-9)
+    np.testing.assert_allclose(quat_to_dcm(eskf.state.q_bn), np.eye(3), atol=1e-10)
+
+
 def test_covariance_stays_symmetric_positive_semidefinite() -> None:
     eskf = LooselyCoupledESKF(make_state())
 

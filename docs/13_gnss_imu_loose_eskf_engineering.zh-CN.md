@@ -241,8 +241,10 @@ P <- J_reset P J_reset^T
 ## 10. 主流程与真实时间戳
 
 ```text
-读取 truth 初始状态（仅评估）
- -> 找到初始化后第一段 IMU 增量
+静止窗口调平 + gyrocompass/外部 yaw，或显式 truth 评估模式
+ -> 用 GNSS 天线位置和杆臂初始化 IMU 位置
+ -> 单子样跨越对准窗口边界（若需要）
+ -> 恢复双子样主传播
  -> 两子样传播名义状态和 P
  -> 处理已到达且时间差在门限内的 GNSS
  -> 保存状态、标准差和更新统计
@@ -255,6 +257,8 @@ P <- J_reset P J_reset^T
 
 ```powershell
 .\.venv\Scripts\python.exe python\examples\run_dataset1_eskf.py `
+  --initialization gyrocompass `
+  --alignment-duration-s 30 `
   --duration-s 60 `
   --imu-profile navigation-grade `
   --output-dir results\dataset1_eskf
@@ -281,18 +285,20 @@ P <- J_reset P J_reset^T
 
 ## 12. 当前真实数据证据与边界
 
-dataset1 前 60 秒、truth 辅助初始化、当前杆臂和 navigation-grade 启动参数：
+dataset1 前 60 秒、30 秒静止 gyrocompass 初始化、当前杆臂和
+navigation-grade 启动参数：
 
 ```text
 导航历元：6000
 接受 GNSS：59
 拒绝 GNSS：0
-三维位置 RMS：约 0.0127 m
-姿态角误差幅值 RMS：约 0.0073 deg
+三维位置 RMS：约 0.0174 m
+姿态角误差幅值 RMS：约 0.793 deg
 ```
 
-这些数字只证明当前实现与这套数据短时一致。初始化和杆臂使用了该数据集的
-真值/诊断信息，不能作为盲测精度宣传。
+该模式不使用 truth 姿态和速度，但位置及评估起点仍由 dataset1 的 GNSS/truth
+时间范围定义，杆臂来自该数据集诊断。数字只证明当前实现与这套数据短时一致，
+不能作为跨设备盲测精度宣传。`--initialization truth` 仅保留用于算法回归上限对照。
 
 ## 13. 工业部署仍缺什么
 

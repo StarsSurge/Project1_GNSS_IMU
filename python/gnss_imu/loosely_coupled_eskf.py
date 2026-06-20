@@ -18,6 +18,7 @@ import numpy as np
 
 from gnss_imu.imu_mechanization import (
     IMUIncrement,
+    bias_correct_increment,
     correct_two_sample_increments,
     finite_vector,
     normalize_quat,
@@ -353,13 +354,6 @@ class LooselyCoupledESKF:
         ):
             raise ValueError("IMU interval gap exceeds configured factor")
 
-        old_lat = self.state.latitude_rad
-        old_lon = self.state.longitude_rad
-        old_h = self.state.height_m
-        old_v = self.state.velocity_ned_mps.copy()
-        old_q = self.state.q_bn.copy()
-        old_c_bn = quat_to_dcm(old_q)
-
         corrected = correct_two_sample_increments(
             IMUIncrement(
                 self.config.imu_calibration.gyro_increment_matrix @ imu1.dtheta_rad,
@@ -374,14 +368,68 @@ class LooselyCoupledESKF:
             b_g=self.state.gyro_bias_rps,
             b_a=self.state.accel_bias_mps2,
         )
-        dt = corrected.dt
+        return self._propagate_corrected_increment(
+            corrected.dtheta,
+            corrected.dvel,
+            corrected.dt,
+            imu2.time_s,
+        )
+
+    def predict_single_sample(self, imu: TimedIMUIncrement) -> ESKFState:
+        """Propagate one sample for event-boundary alignment.
+
+        The normal navigation path should use two-sample propagation.  This
+        method exists for odd sample counts and asynchronous event boundaries,
+        where dropping or duplicating one increment would be worse.
+        """
+        continuity_tolerance = max(1e-6, 0.05 * imu.dt_s)
+        expected_end = self.state.time_s + imu.dt_s
+        if abs(imu.time_s - expected_end) > continuity_tolerance:
+            raise ValueError(
+                "IMU sample is not contiguous with filter state: "
+                f"state={self.state.time_s}, imu={imu.time_s}"
+            )
+        calibrated = IMUIncrement(
+            self.config.imu_calibration.gyro_increment_matrix @ imu.dtheta_rad,
+            self.config.imu_calibration.accel_increment_matrix @ imu.dvel_mps,
+            imu.dt_s,
+        )
+        dtheta, dvel = bias_correct_increment(
+            calibrated,
+            self.state.gyro_bias_rps,
+            self.state.accel_bias_mps2,
+        )
+        # Constant-rate single-sample approximation for body rotation during
+        # the velocity increment.  Coning/sculling require at least two samples.
+        corrected_dvel = dvel + 0.5 * np.cross(dtheta, dvel)
+        return self._propagate_corrected_increment(
+            dtheta,
+            corrected_dvel,
+            imu.dt_s,
+            imu.time_s,
+        )
+
+    def _propagate_corrected_increment(
+        self,
+        corrected_dtheta: Array,
+        corrected_dvel: Array,
+        dt: float,
+        end_time_s: float,
+    ) -> ESKFState:
+        old_lat = self.state.latitude_rad
+        old_lon = self.state.longitude_rad
+        old_h = self.state.height_m
+        old_v = self.state.velocity_ned_mps.copy()
+        old_q = self.state.q_bn.copy()
+        old_c_bn = quat_to_dcm(old_q)
+
         omega_ie_n = earth_rate_ned(old_lat)
         omega_en_n = transport_rate_ned(old_lat, old_h, old_v)
         omega_in_n = omega_ie_n + omega_en_n
 
         # Navigation frame rotates on the left; body increment rotates on the right.
         dq_nav = rotvec_to_quat(-omega_in_n * dt)
-        dq_body = rotvec_to_quat(corrected.dtheta)
+        dq_body = rotvec_to_quat(corrected_dtheta)
         q_new = normalize_quat(
             quat_multiply(quat_multiply(dq_nav, old_q), dq_body),
             "q_new",
@@ -390,7 +438,7 @@ class LooselyCoupledESKF:
         # Two-sample correction expresses delta-v in the old body frame.  Apply
         # a half navigation-frame rotation before mapping it to NED.
         nav_half_rotation = np.eye(3) - 0.5 * skew(omega_in_n * dt)
-        dvel_n = nav_half_rotation @ old_c_bn @ corrected.dvel
+        dvel_n = nav_half_rotation @ old_c_bn @ corrected_dvel
         gravity_n = np.array([0.0, 0.0, normal_gravity_mps2(old_lat, old_h)])
         coriolis_n = -np.cross(2.0 * omega_ie_n + omega_en_n, old_v)
         v_new = old_v + dvel_n + (gravity_n + coriolis_n) * dt
@@ -404,11 +452,11 @@ class LooselyCoupledESKF:
         lon_new = old_lon + average_v[1] * dt / ((rn + old_h) * cos_lat)
         h_new = old_h - average_v[2] * dt
 
-        specific_force_b = corrected.dvel / dt
-        angular_rate_b = corrected.dtheta / dt
+        specific_force_b = corrected_dvel / dt
+        angular_rate_b = corrected_dtheta / dt
         self._propagate_covariance(old_c_bn, specific_force_b, angular_rate_b, dt)
 
-        self.state.time_s = imu2.time_s
+        self.state.time_s = end_time_s
         self.state.latitude_rad = float(lat_new)
         self.state.longitude_rad = float(lon_new)
         self.state.height_m = float(h_new)

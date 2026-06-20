@@ -112,6 +112,35 @@ b_g = mean(omega_m_b) - C_nb * omega_ie_n
 dataset1 约 50 秒静止窗口的典型结果：roll/pitch 误差小于 `0.05 deg`，
 gyrocompass yaw 误差约 `1.1 deg`。该结果只适用于此高精 IMU 和当前窗口。
 
+对准已接入 ESKF 主流程，支持：
+
+```text
+--initialization gyrocompass
+--initialization external-yaw --initial-yaw-deg <heading>
+--initialization truth  # 仅评估回归
+```
+
+高精 IMU 示例：
+
+```powershell
+.\.venv\Scripts\python.exe python\examples\run_dataset1_eskf.py `
+  --initialization gyrocompass `
+  --alignment-duration-s 30 `
+  --duration-s 60
+```
+
+MEMS 示例必须提供外部 yaw：
+
+```powershell
+.\.venv\Scripts\python.exe python\examples\run_dataset1_eskf.py `
+  --imu-profile mems `
+  --initialization external-yaw `
+  --initial-yaw-deg 185.67
+```
+
+若静止窗口结束与双子样边界错开，主流程使用一次受控单子样传播跨过边界，
+不会丢弃、重复或篡改 IMU 时间戳。
+
 测试覆盖解析调平、gyro bias、无 yaw 来源拒绝、运动窗口拒绝、DCM/四元数转换，
 以及 dataset1 gyrocompass 与 truth 的定量比较。
 

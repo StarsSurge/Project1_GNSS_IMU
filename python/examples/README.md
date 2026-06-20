@@ -87,7 +87,12 @@ GNSS/IMU ESKF 60-second replay:
 
 ```powershell
 .\.venv\Scripts\python.exe python\examples\run_dataset1_eskf.py `
+  --initialization gyrocompass `
+  --alignment-duration-s 30 `
   --duration-s 60 `
   --imu-profile navigation-grade `
   --output-dir results\dataset1_eskf
 ```
+
+For MEMS data, use `--initialization external-yaw --initial-yaw-deg ...`;
+the replay intentionally rejects static MEMS gyrocompassing.
