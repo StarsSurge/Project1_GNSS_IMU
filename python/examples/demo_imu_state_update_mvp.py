@@ -1,8 +1,8 @@
-"""MVP scaffold for a two-sample IMU nominal state update.
+"""MVP prototype for a two-sample IMU nominal state update.
 
 This file is intentionally an algorithm-prototype workspace.  The stable base
-components live in ``gnss_imu.imu_mechanization``; the state propagation body is
-left for the learner to implement step by step.
+components live in ``gnss_imu.imu_mechanization``; this script connects them
+into an explicit nominal-state propagation flow for study and verification.
 
 Run from the repository root:
 
@@ -40,14 +40,15 @@ def propagate_two_sample_mvp(
     state: NavigationState,
     imu1: IMUIncrement,
     imu2: IMUIncrement,
-    gravity_ned: np.ndarray = GRAVITY_NED,
+    gravity_ned: np.ndarray | None = None,
 ) -> NavigationState:
     """Prototype two-sample strapdown state propagation.
 
-    Implement this function as the current MVP exercise.  Keep the code
-    explicit and close to the derivation before promoting it into the formal
-    library module.
+    The implementation stays explicit and close to the derivation before it is
+    promoted into the formal library module.
     """
+    if gravity_ned is None:
+        gravity_ned = GRAVITY_NED
     gravity_ned = np.asarray(gravity_ned, dtype=float).reshape(3)
     if not np.all(np.isfinite(gravity_ned)):
         raise ValueError("gravity_ned must contain only finite values")
@@ -129,8 +130,8 @@ def make_dataset1_measured_case() -> tuple[NavigationState, IMUIncrement, IMUInc
     """Use two consecutive measured IMU frames from ``data/dataset1``.
 
     Source rows:
-        - ``Leador-A15.txt`` line 10001, time 456300.004412029 s
         - ``Leador-A15.txt`` line 10002, time 456300.009412029 s
+        - ``Leador-A15.txt`` line 10003, time 456300.014412029 s
 
     Initial state source:
         - ``truth.nav`` first row, time 456300.004412 s
@@ -151,14 +152,17 @@ def make_dataset1_measured_case() -> tuple[NavigationState, IMUIncrement, IMUInc
         b_g=np.zeros(3),
     )
 
+    # The truth state is at 456300.004412 s, so use increments ending after
+    # that epoch.  Reusing the IMU row at the same timestamp would integrate
+    # the preceding interval twice.
     imu1 = IMUIncrement(
-        dtheta=np.array([0.0000043453, -0.0000018374, -0.0000012908]),
-        dvel=np.array([-0.0023051314, -0.0010445054, -0.0488077663]),
+        dtheta=np.array([0.0000002888, -0.0000027108, -0.0000018521]),
+        dvel=np.array([-0.0021418147, -0.0012695923, -0.0491048507]),
         dt=0.005,
     )
     imu2 = IMUIncrement(
-        dtheta=np.array([0.0000002888, -0.0000027108, -0.0000018521]),
-        dvel=np.array([-0.0021418147, -0.0012695923, -0.0491048507]),
+        dtheta=np.array([0.0000007072, 0.0000007140, -0.0000007045]),
+        dvel=np.array([-0.0013359998, -0.0010260993, -0.0490441956]),
         dt=0.005,
     )
     return state0, imu1, imu2
@@ -180,24 +184,19 @@ def main() -> None:
     imu1, imu2 = make_static_two_sample_imu()
 
     print("=" * 72)
-    print("IMU state update MVP scaffold")
+    print("IMU state update MVP prototype")
     print("=" * 72)
     print_state("Initial state:", state0)
     print("\nTwo IMU increment samples:")
     print(f"  imu1: {asdict(imu1)}")
     print(f"  imu2: {asdict(imu2)}")
 
-    print("\nExpected after you implement propagate_two_sample_mvp():")
+    print("\nExpected static propagation result:")
     print("  p_n close to [0, 0, 0]")
     print("  v_n close to [0, 0, 0]")
     print("  q_bn close to [1, 0, 0, 0]")
 
-    try:
-        state1 = propagate_two_sample_mvp(state0, imu1, imu2)
-    except NotImplementedError as exc:
-        print("\nImplementation status:")
-        print(f"  {exc}")
-        return
+    state1 = propagate_two_sample_mvp(state0, imu1, imu2)
 
     print_state("\nUpdated state:", state1)
     print("\nStatic residual checks:")

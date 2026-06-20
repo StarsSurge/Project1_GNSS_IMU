@@ -277,6 +277,14 @@ def correct_two_sample_increments(
     if b_a is None:
         b_a = np.zeros(3)
 
+    # 经典 2/3 圆锥/划桨系数建立在两个子样本等时长的假设上。
+    # 允许很小的时间戳量化抖动，但拒绝真正的不等间隔输入，避免静默误用。
+    if not np.isclose(imu1.dt, imu2.dt, rtol=5e-3, atol=1e-9):
+        raise ValueError(
+            "two-sample correction requires equal sample intervals; "
+            f"got {imu1.dt} s and {imu2.dt} s"
+        )
+
     dtheta1, dvel1 = bias_correct_increment(imu1, b_g, b_a)
     dtheta2, dvel2 = bias_correct_increment(imu2, b_g, b_a)
 

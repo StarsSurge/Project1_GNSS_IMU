@@ -11,8 +11,10 @@ Available examples:
   CSV/Feather data, with parameter tables and an auditable report
 - `visualize_dataset1.py`: first-pass RTK, IMU increment, and truth
   visualization for `data/dataset1`
-- `demo_imu_state_update_mvp.py`: scaffold for hand-writing the first
-  two-sample IMU nominal state update prototype
+- `demo_imu_state_update_mvp.py`: two-sample IMU nominal state update
+  prototype with static and time-aligned measured-data cases
+- `run_dataset1_eskf.py`: timestamp-driven 15-state GNSS/IMU loose ESKF replay
+  with WGS-84 mechanization, lever arm, NIS gating, CSV/JSON, and error plots
 
 Run from the repository root:
 
@@ -58,16 +60,15 @@ outliers; these must be checked before interpreting the result.
 
 GNSS/IMU mechanization and ESKF demos are the next planned examples.
 
-IMU state-update MVP scaffold:
+IMU state-update MVP prototype:
 
 ```powershell
 $env:PYTHONPATH = "$PWD\python"
 .\.venv\Scripts\python.exe python\examples\demo_imu_state_update_mvp.py
 ```
 
-The scaffold prepares a known static initial state and two static IMU increment
-samples.  The propagation function intentionally raises `NotImplementedError`
-until you fill in the TODO steps.
+The prototype verifies a known static case, then propagates two measured IMU
+increments that occur after the selected `truth.nav` initialization epoch.
 
 Dataset1 visualization:
 
@@ -79,3 +80,12 @@ python python\examples\visualize_dataset1.py
 This writes trajectory, RTK uncertainty, RTK-minus-truth residual,
 lever-arm diagnostic residual, IMU increment/rate, truth velocity/attitude
 plots, and `summary.json` to `results\dataset1_visualization`.
+
+GNSS/IMU ESKF 60-second replay:
+
+```powershell
+.\.venv\Scripts\python.exe python\examples\run_dataset1_eskf.py `
+  --duration-s 60 `
+  --imu-profile navigation-grade `
+  --output-dir results\dataset1_eskf
+```

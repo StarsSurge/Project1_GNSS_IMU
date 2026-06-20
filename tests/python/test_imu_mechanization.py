@@ -124,3 +124,11 @@ def test_two_sample_correction_exposes_expected_cross_terms() -> None:
     assert np.linalg.norm(correction.sculling) > 0.0
     assert np.linalg.norm(correction.rotation) > 0.0
     np.testing.assert_allclose(correction.dt, 0.01)
+
+
+def test_two_sample_correction_rejects_unequal_intervals() -> None:
+    imu1 = IMUIncrement(np.zeros(3), np.zeros(3), dt=0.005)
+    imu2 = IMUIncrement(np.zeros(3), np.zeros(3), dt=0.006)
+
+    with pytest.raises(ValueError, match="requires equal sample intervals"):
+        correct_two_sample_increments(imu1, imu2)

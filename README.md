@@ -68,12 +68,16 @@ The current Python phase includes:
 - a verified-MVP Allan analysis module for named-column real IMU CSV logs,
   including timestamp validation, rate/increment conversion, and auditable
   CSV/JSON/PNG outputs
+- a production-oriented 15-state GNSS/IMU loose ESKF baseline with WGS-84
+  mechanization, two-sample corrections, lever arm, NIS gating, Joseph updates,
+  calibrated IMU matrices, and dataset1 replay outputs
 
 ```powershell
 $env:PYTHONPATH = "$PWD\python"
 python python\examples\demo_1d_kalman_filter.py
 python python\examples\demo_kalman_filter.py
 python python\examples\demo_extended_kalman_filter.py
+python python\examples\run_dataset1_eskf.py --duration-s 60
 python -m pytest tests
 ```
 
@@ -81,9 +85,9 @@ The Allan CSV tool is not deployment-ready: the repository still lacks a
 traceable real stationary IMU dataset, automatic stationarity/temperature/
 saturation checks, and equivalent-degrees-of-freedom confidence intervals.
 
-The next implementation milestone is a minimal GNSS/IMU error-state
-Kalman filter using a documented real dataset or a clearly labelled
-synthetic trajectory.
+The ESKF is a verified MVP / production-oriented baseline, not deployment-ready.
+Online alignment, delayed-state updates, temperature models, 21-state online
+scale-factor estimation, and real-time deployment validation remain open.
 
 ## Notes for Generated Outputs
 

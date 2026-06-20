@@ -293,12 +293,12 @@ def rpy_deg_to_body_to_ned(
     matrices = np.empty(roll.shape + (3, 3), dtype=float)
     matrices[..., 0, 0] = cy * cp
     matrices[..., 0, 1] = -sy * cr + cy * sp * sr
-    matrices[..., 0, 2] = -sy * sr - cy * sp * cr
+    matrices[..., 0, 2] = cy * sp * cr + sy * sr
     matrices[..., 1, 0] = sy * cp
     matrices[..., 1, 1] = cy * cr + sy * sp * sr
-    matrices[..., 1, 2] = cy * sr - sy * sp * cr
-    matrices[..., 2, 0] = sp
-    matrices[..., 2, 1] = -cp * sr
+    matrices[..., 1, 2] = sy * sp * cr - cy * sr
+    matrices[..., 2, 0] = -sp
+    matrices[..., 2, 1] = cp * sr
     matrices[..., 2, 2] = cp * cr
     return matrices
 

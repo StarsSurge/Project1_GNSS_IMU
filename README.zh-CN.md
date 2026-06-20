@@ -75,20 +75,23 @@ pytest
 - 可运行的可视化示例与 GNSS/IMU、ESKF 学习笔记
 - 面向真实命名列 IMU CSV 的 Allan 分析 MVP，包含时间戳校验、
   rate/增量转换以及可审计的 CSV、JSON 和 PNG 输出
+- 生产导向的 15 状态 GNSS/IMU 松组合 ESKF 基线，包含 WGS-84 地球模型、
+  双子样机械编排、杆臂、GNSS NIS 门限、Joseph 更新和 dataset1 回放
 
 ```powershell
 $env:PYTHONPATH = "$PWD\python"
 python python\examples\demo_1d_kalman_filter.py
 python python\examples\demo_kalman_filter.py
 python python\examples\demo_extended_kalman_filter.py
+python python\examples\run_dataset1_eskf.py --duration-s 60
 python -m pytest tests
 ```
 
 Allan CSV 工具当前属于“验证过的 MVP”，尚未达到部署级：仓库仍缺少可追溯的
 真实静态 IMU 数据、自动静止/温度/饱和检查以及基于等效自由度的置信区间。
 
-下一阶段目标是结合已有数据说明或明确标注的合成轨迹，实现最小可用的
-GNSS/IMU Error-State Kalman Filter。
+GNSS/IMU ESKF 当前属于 verified MVP / production-oriented baseline，尚未完成
+在线对准、精确延迟状态更新、温度模型、21 状态比例因子估计和实时部署验证。
 
 ## 生成结果说明
 

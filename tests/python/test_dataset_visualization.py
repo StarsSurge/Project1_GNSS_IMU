@@ -16,6 +16,7 @@ from gnss_imu.dataset_visualization import (
     rpy_deg_to_body_to_ned,
     sampling_summary,
 )
+from gnss_imu.imu_mechanization import euler_zyx_to_quat, quat_to_dcm
 
 
 def test_geodetic_to_ned_matches_small_local_offsets() -> None:
@@ -108,6 +109,30 @@ def test_rpy_to_body_to_ned_matches_heading_convention() -> None:
     body_right = np.array([0.0, 1.0, 0.0])
     np.testing.assert_allclose(east_heading @ body_forward, [0.0, 1.0, 0.0], atol=1e-12)
     np.testing.assert_allclose(east_heading @ body_right, [-1.0, 0.0, 0.0], atol=1e-12)
+
+
+def test_rpy_to_body_to_ned_matches_quaternion_for_full_attitude() -> None:
+    roll_deg = 12.0
+    pitch_deg = -7.0
+    yaw_deg = 123.0
+
+    matrix_from_rpy = rpy_deg_to_body_to_ned(
+        roll_deg, pitch_deg, yaw_deg
+    )
+    matrix_from_quaternion = quat_to_dcm(
+        euler_zyx_to_quat(
+            roll_deg,
+            pitch_deg,
+            yaw_deg,
+            degrees=True,
+        )
+    )
+
+    np.testing.assert_allclose(
+        matrix_from_rpy,
+        matrix_from_quaternion,
+        atol=1e-12,
+    )
 
 
 def test_fit_body_lever_arm_recovers_known_offset() -> None:

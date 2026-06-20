@@ -6,7 +6,10 @@
 
 > 已知上一时刻的姿态、速度、位置和 IMU bias，如何把 IMU 的角增量与速度增量变成下一步名义状态？
 
-本阶段只补齐基础组件，还不实现完整 `propagate_two_sample()`。这样做的原因是：IMU 状态更新最容易出错的地方不是代码量，而是单位、坐标系、四元数乘法顺序和重力符号。一旦这些基础约定错了，后面的协方差传播和 GNSS 更新都会在错误模型上工作。
+本阶段补齐基础组件，并在 `python/examples/demo_imu_state_update_mvp.py`
+中实现显式的两子样名义状态传播原型。IMU 状态更新最容易出错的地方
+不是代码量，而是单位、时间归属、坐标系、四元数乘法顺序和重力符号。
+一旦这些基础约定错了，后面的协方差传播和 GNSS 更新都会在错误模型上工作。
 
 ## 2. 物理直觉
 
@@ -148,7 +151,11 @@ corrected.dvel
 corrected.dt
 ```
 
-下一步你要写的 `propagate_two_sample()` 应该使用这些量做：
+经典 `2/3` 双子样系数要求两个子样本近似等间隔。当前实现允许小量时间戳
+抖动，但会拒绝明显不相等的 `imu1.dt` 和 `imu2.dt`，避免把等间隔公式
+静默用于不规则采样。
+
+原型中的 `propagate_two_sample_mvp()` 使用这些量完成：
 
 ```text
 q_new = q_old ⊗ Exp(corrected.dtheta)
@@ -168,11 +175,18 @@ p_new = p_old + 0.5 * (v_old + v_new) * dt
 - 四元数乘法与 DCM 连乘一致。
 - bias 补偿确实使用每帧自己的 `dt`。
 - 双子样圆锥、划桨和旋转交叉项非零且可检查。
+- 明显不等间隔的两个子样会被拒绝。
+- 静止传播保持位置、速度和姿态不变。
+- 自由落体在 NED down 方向按重力增长。
+- 恒定 yaw 的旋转方向符合 `q_bn` 右乘约定。
+- 实测输入只使用初始化时刻之后的 IMU 增量。
 
 运行：
 
 ```powershell
-python -m pytest tests\python\test_imu_mechanization.py -v
+.\.venv\Scripts\python.exe -m pytest `
+  tests\python\test_imu_mechanization.py `
+  tests\python\test_imu_state_update_mvp.py -v
 ```
 
 ## 9. 常见错误
@@ -186,10 +200,6 @@ python -m pytest tests\python\test_imu_mechanization.py -v
 
 ## 10. 下一步
 
-下一步实现完整的两帧名义状态传播函数：
-
-```text
-propagate_two_sample(state, imu1, imu2, gravity=9.80665)
-```
-
-优先验证静止、自由落体和恒定 yaw 三个场景。只有这三个通过，才进入误差状态协方差传播。
+当前原型已通过静止、自由落体、恒定 yaw 和两帧实测数据 sanity check。
+下一步是在更长的连续 IMU 序列上回放，并与 `truth.nav` 对齐评估速度和姿态
+误差；通过后再把原型提升为正式库函数，并进入误差状态协方差传播。
