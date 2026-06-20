@@ -213,6 +213,62 @@ def quat_to_dcm(q_bn: Array) -> Array:
     )
 
 
+def dcm_to_quat(c_bn: Array) -> Array:
+    """Convert a proper body-to-NED direction cosine matrix to a quaternion."""
+    matrix = np.asarray(c_bn, dtype=float)
+    if matrix.shape != (3, 3) or not np.all(np.isfinite(matrix)):
+        raise ValueError("c_bn must be a finite 3x3 matrix")
+    if not np.allclose(matrix @ matrix.T, np.eye(3), atol=1e-8) or not np.isclose(
+        np.linalg.det(matrix), 1.0, atol=1e-8
+    ):
+        raise ValueError("c_bn must be a proper orthonormal rotation matrix")
+
+    trace = np.trace(matrix)
+    if trace > 0.0:
+        scale = 2.0 * np.sqrt(trace + 1.0)
+        quat = np.array(
+            [
+                0.25 * scale,
+                (matrix[2, 1] - matrix[1, 2]) / scale,
+                (matrix[0, 2] - matrix[2, 0]) / scale,
+                (matrix[1, 0] - matrix[0, 1]) / scale,
+            ]
+        )
+    else:
+        axis = int(np.argmax(np.diag(matrix)))
+        if axis == 0:
+            scale = 2.0 * np.sqrt(1.0 + matrix[0, 0] - matrix[1, 1] - matrix[2, 2])
+            quat = np.array(
+                [
+                    (matrix[2, 1] - matrix[1, 2]) / scale,
+                    0.25 * scale,
+                    (matrix[0, 1] + matrix[1, 0]) / scale,
+                    (matrix[0, 2] + matrix[2, 0]) / scale,
+                ]
+            )
+        elif axis == 1:
+            scale = 2.0 * np.sqrt(1.0 + matrix[1, 1] - matrix[0, 0] - matrix[2, 2])
+            quat = np.array(
+                [
+                    (matrix[0, 2] - matrix[2, 0]) / scale,
+                    (matrix[0, 1] + matrix[1, 0]) / scale,
+                    0.25 * scale,
+                    (matrix[1, 2] + matrix[2, 1]) / scale,
+                ]
+            )
+        else:
+            scale = 2.0 * np.sqrt(1.0 + matrix[2, 2] - matrix[0, 0] - matrix[1, 1])
+            quat = np.array(
+                [
+                    (matrix[1, 0] - matrix[0, 1]) / scale,
+                    (matrix[0, 2] + matrix[2, 0]) / scale,
+                    (matrix[1, 2] + matrix[2, 1]) / scale,
+                    0.25 * scale,
+                ]
+            )
+    return normalize_quat(quat, "q_bn")
+
+
 def euler_zyx_to_quat(
     roll: float,
     pitch: float,

@@ -77,6 +77,7 @@ pytest
   rate/增量转换以及可审计的 CSV、JSON 和 PNG 输出
 - 生产导向的 15 状态 GNSS/IMU 松组合 ESKF 基线，包含 WGS-84 地球模型、
   双子样机械编排、杆臂、GNSS NIS 门限、Joseph 更新和 dataset1 回放
+- 静止窗口检测、重力调平、外部航向/高精陀螺 gyrocompass 初始化
 
 ```powershell
 $env:PYTHONPATH = "$PWD\python"

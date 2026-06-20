@@ -15,6 +15,8 @@ Available examples:
   prototype with static and time-aligned measured-data cases
 - `run_dataset1_eskf.py`: timestamp-driven 15-state GNSS/IMU loose ESKF replay
   with WGS-84 mechanization, lever arm, NIS gating, CSV/JSON, and error plots
+- `demo_static_imu_alignment.py`: static detection, leveling, and
+  navigation-grade gyrocompass initialization on dataset1
 
 Run from the repository root:
 

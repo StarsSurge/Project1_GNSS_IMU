@@ -10,6 +10,7 @@ from gnss_imu import (
     NavigationState,
     bias_correct_increment,
     correct_two_sample_increments,
+    dcm_to_quat,
     euler_zyx_to_quat,
     normalize_quat,
     quat_multiply,
@@ -87,6 +88,14 @@ def test_quaternion_composition_matches_dcm_composition() -> None:
         quat_to_dcm(q1) @ quat_to_dcm(q2),
         atol=1e-12,
     )
+
+
+def test_dcm_to_quaternion_round_trip() -> None:
+    q_bn = euler_zyx_to_quat(12.0, -7.0, 123.0, degrees=True)
+
+    recovered = dcm_to_quat(quat_to_dcm(q_bn))
+
+    np.testing.assert_allclose(quat_to_dcm(recovered), quat_to_dcm(q_bn), atol=1e-12)
 
 
 def test_bias_correction_uses_sample_dt() -> None:

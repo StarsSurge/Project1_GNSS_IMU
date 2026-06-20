@@ -18,6 +18,8 @@ Current coverage includes:
 - WGS-84, stationary Earth-rate compensation, covariance PSD, GNSS lever arm,
   innovation gating, known IMU calibration, timestamp failures, and dataset1
   ESKF replay integration
+- static-window validation, analytic leveling, yaw observability rejection,
+  gyro bias initialization, and dataset1 navigation-grade gyrocompassing
 
 Run from the repository root:
 

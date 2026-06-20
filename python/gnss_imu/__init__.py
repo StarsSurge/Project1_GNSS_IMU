@@ -41,6 +41,7 @@ from gnss_imu.imu_mechanization import (
     TwoSampleCorrection,
     bias_correct_increment,
     correct_two_sample_increments,
+    dcm_to_quat,
     euler_zyx_to_quat,
     finite_vector,
     normalize_quat,
@@ -66,6 +67,12 @@ from gnss_imu.loosely_coupled_eskf import (
     normal_gravity_mps2,
     radii_of_curvature,
     transport_rate_ned,
+)
+from gnss_imu.imu_initialization import (
+    StaticAlignmentConfig,
+    StaticAlignmentDiagnostics,
+    StaticAlignmentResult,
+    initialize_from_static_imu,
 )
 from gnss_imu.dataset_visualization import (
     Dataset1,
@@ -117,6 +124,7 @@ __all__ = [
     "euler_zyx_to_quat",
     "bias_correct_increment",
     "correct_two_sample_increments",
+    "dcm_to_quat",
     # GNSS/IMU loosely coupled ESKF
     "TimedIMUIncrement",
     "GNSSPositionMeasurement",
@@ -133,6 +141,11 @@ __all__ = [
     "geodetic_difference_ned",
     "apply_ned_position_delta",
     "default_initial_covariance",
+    # Static IMU initialization
+    "StaticAlignmentConfig",
+    "StaticAlignmentDiagnostics",
+    "StaticAlignmentResult",
+    "initialize_from_static_imu",
     # Dataset visualization
     "Dataset1",
     "RtkData",
