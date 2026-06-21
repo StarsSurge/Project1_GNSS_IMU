@@ -20,6 +20,8 @@ Current coverage includes:
   ESKF replay integration
 - static-window validation, analytic leveling, yaw observability rejection,
   gyro bias initialization, and dataset1 navigation-grade gyrocompassing
+- exact mid-interval delayed GNSS replay, fixed-lag expiry, known constant
+  time-offset recovery, and static time-offset observability rejection
 
 Run from the repository root:
 

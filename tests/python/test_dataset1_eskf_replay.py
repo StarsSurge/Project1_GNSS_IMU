@@ -40,6 +40,8 @@ def test_dataset1_short_replay_writes_finite_auditable_outputs(tmp_path) -> None
     assert summary["maturity"] == "verified MVP / production-oriented baseline"
     assert summary["accepted_gnss_updates"] >= 1
     assert summary["skipped_unsynchronized_gnss"] == 0
+    assert summary["gnss_timing"]["update_mode"] == "delayed-replay"
+    assert summary["gnss_timing"]["delayed_update_count"] >= 1
     assert solution.shape[0] >= 100
     assert np.all(np.isfinite(solution))
     assert result["eskf"].accepted_gnss_updates >= 1

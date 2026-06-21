@@ -24,6 +24,7 @@ from gnss_imu import (  # noqa: E402
     GNSSPositionMeasurement,
     IMUNoiseModel,
     LooselyCoupledESKF,
+    FixedLagGNSSFusion,
     TimedIMUIncrement,
     StaticAlignmentConfig,
     apply_ned_position_delta,
@@ -87,6 +88,24 @@ def parse_args() -> argparse.Namespace:
         metavar=("FORWARD", "RIGHT", "DOWN"),
         default=(0.14722696, -0.29821683, -0.18079014),
         help="Calibrated GNSS antenna minus IMU lever arm in body FRD [m].",
+    )
+    parser.add_argument(
+        "--gnss-update-mode",
+        choices=("delayed-replay", "nearest"),
+        default="delayed-replay",
+        help="Exact fixed-lag replay or the legacy nearest-epoch update.",
+    )
+    parser.add_argument(
+        "--gnss-time-offset-s",
+        type=float,
+        default=0.0,
+        help="Timestamp convention: effective_time = reported_time + offset.",
+    )
+    parser.add_argument(
+        "--fixed-lag-s",
+        type=float,
+        default=2.0,
+        help="Retained IMU history for delayed GNSS replay [s].",
     )
     return parser.parse_args()
 
@@ -248,6 +267,7 @@ def _write_outputs(
     skipped_gnss: int,
     profile_name: str,
     initialization_metadata: dict[str, object],
+    timing_metadata: dict[str, object],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     times = np.asarray(history["time_s"])
@@ -332,6 +352,7 @@ def _write_outputs(
     summary = {
         "maturity": "verified MVP / production-oriented baseline",
         "initialization": initialization_metadata,
+        "gnss_timing": timing_metadata,
         "imu_profile": profile_name,
         "duration_s": float(times[-1] - times[0]),
         "navigation_epochs": int(times.size),
@@ -345,7 +366,7 @@ def _write_outputs(
         "limitations": [
             "Static alignment is window-based; online window search and fine alignment are not implemented.",
             "Known calibration matrices are supported; online scale-factor, temperature, and vibration-rectification models are not.",
-            "GNSS updates use nearest propagated epoch within the configured tolerance; no delayed-state rewind.",
+            "The configured GNSS time offset is constant; clock drift and per-epoch latency jitter are not estimated online.",
             "Noise profiles are starting points and must be replaced by calibrated device parameters.",
             "Python implementation is for offline verification, not certified hard real-time deployment.",
         ],
@@ -403,6 +424,13 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         start_time,
     )
     eskf = LooselyCoupledESKF(state, config)
+    update_mode = getattr(args, "gnss_update_mode", "delayed-replay")
+    gnss_time_offset_s = float(getattr(args, "gnss_time_offset_s", 0.0))
+    fixed_lag_s = float(getattr(args, "fixed_lag_s", 2.0))
+    if update_mode not in ("delayed-replay", "nearest"):
+        raise ValueError("gnss_update_mode must be 'delayed-replay' or 'nearest'")
+    if not np.isfinite(gnss_time_offset_s):
+        raise ValueError("gnss_time_offset_s must be finite")
 
     history: dict[str, list] = {
         "time_s": [], "latitude_rad": [], "longitude_rad": [], "height_m": [],
@@ -444,66 +472,114 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         else int(np.searchsorted(data.rtk.time_s, start_time, side="right"))
     )
     skipped_gnss = 0
+    delayed_results = []
 
     imu_index = imu_start
-    if eskf.state.time_s < start_time - 1e-6:
-        time_single = float(data.imu.time_s[imu_index])
-        dt_single = time_single - float(data.imu.time_s[imu_index - 1])
-        eskf.predict_single_sample(
-            TimedIMUIncrement(
-                time_single,
-                data.imu.delta_angle_rad[imu_index],
-                data.imu.delta_velocity_mps[imu_index],
-                dt_single,
-            )
+    fusion = (
+        FixedLagGNSSFusion(
+            eskf,
+            lag_s=fixed_lag_s,
+            gnss_time_offset_s=gnss_time_offset_s,
         )
-        imu_index += 1
+        if update_mode == "delayed-replay"
+        else None
+    )
+
+    def make_imu(index: int) -> TimedIMUIncrement:
+        time_s = float(data.imu.time_s[index])
+        dt_s = time_s - float(data.imu.time_s[index - 1])
+        return TimedIMUIncrement(
+            time_s,
+            data.imu.delta_angle_rad[index],
+            data.imu.delta_velocity_mps[index],
+            dt_s,
+        )
+
+    def make_gnss(index: int) -> GNSSPositionMeasurement:
+        return GNSSPositionMeasurement(
+            time_s=float(data.rtk.time_s[index]),
+            latitude_rad=np.deg2rad(data.rtk.latitude_deg[index]),
+            longitude_rad=np.deg2rad(data.rtk.longitude_deg[index]),
+            height_m=float(data.rtk.height_m[index]),
+            std_ned_m=data.rtk.std_ned_m[index],
+        )
+
+    if update_mode == "delayed-replay":
+        assert fusion is not None
+        if eskf.state.time_s >= start_time - 1e-6:
+            record_state()
+        samples_since_record = 0
+        while imu_index < data.imu.time_s.size:
+            imu = make_imu(imu_index)
+            if imu.time_s > end_time:
+                break
+            fusion.process_imu(imu)
+            while gnss_index < data.rtk.time_s.size:
+                measurement = make_gnss(gnss_index)
+                delivery_time = max(
+                    measurement.time_s,
+                    measurement.time_s + gnss_time_offset_s,
+                )
+                if delivery_time > eskf.state.time_s + 1e-9:
+                    break
+                delayed_results.append(
+                    fusion.process_gnss(
+                        measurement,
+                        arrival_time_s=eskf.state.time_s,
+                    )
+                )
+                gnss_index += 1
+            if eskf.state.time_s >= start_time - 1e-6:
+                samples_since_record += 1
+                # 与原双子样主流程保持约 100 Hz 的解文件记录频率；
+                # 滤波内部仍逐个处理并保存约 200 Hz 的原始 IMU 增量。
+                if not history["time_s"] or samples_since_record >= 2:
+                    record_state()
+                    samples_since_record = 0
+            imu_index += 1
+    else:
         if eskf.state.time_s < start_time - 1e-6:
-            raise ValueError(
-                "one boundary IMU sample did not reach the evaluation start"
-            )
-    record_state()
-
-    while imu_index + 1 < data.imu.time_s.size:
-        time1 = float(data.imu.time_s[imu_index])
-        time2 = float(data.imu.time_s[imu_index + 1])
-        if time2 > end_time:
-            break
-        dt1 = time1 - float(data.imu.time_s[imu_index - 1])
-        dt2 = time2 - time1
-        imu1 = TimedIMUIncrement(
-            time1,
-            data.imu.delta_angle_rad[imu_index],
-            data.imu.delta_velocity_mps[imu_index],
-            dt1,
-        )
-        imu2 = TimedIMUIncrement(
-            time2,
-            data.imu.delta_angle_rad[imu_index + 1],
-            data.imu.delta_velocity_mps[imu_index + 1],
-            dt2,
-        )
-        eskf.predict_two_sample(imu1, imu2)
-
-        while (
-            gnss_index < data.rtk.time_s.size
-            and data.rtk.time_s[gnss_index] <= eskf.state.time_s
-        ):
-            measurement = GNSSPositionMeasurement(
-                time_s=float(data.rtk.time_s[gnss_index]),
-                latitude_rad=np.deg2rad(data.rtk.latitude_deg[gnss_index]),
-                longitude_rad=np.deg2rad(data.rtk.longitude_deg[gnss_index]),
-                height_m=float(data.rtk.height_m[gnss_index]),
-                std_ned_m=data.rtk.std_ned_m[gnss_index],
-            )
-            if abs(eskf.state.time_s - measurement.time_s) <= config.max_gnss_time_error_s:
-                eskf.update_gnss_position(measurement)
-            else:
-                skipped_gnss += 1
-            gnss_index += 1
-
+            eskf.predict_single_sample(make_imu(imu_index))
+            imu_index += 1
+            if eskf.state.time_s < start_time - 1e-6:
+                raise ValueError("one boundary IMU sample did not reach the evaluation start")
         record_state()
-        imu_index += 2
+        while imu_index + 1 < data.imu.time_s.size:
+            imu1 = make_imu(imu_index)
+            imu2 = make_imu(imu_index + 1)
+            if imu2.time_s > end_time:
+                break
+            eskf.predict_two_sample(imu1, imu2)
+            while (
+                gnss_index < data.rtk.time_s.size
+                and data.rtk.time_s[gnss_index] <= eskf.state.time_s
+            ):
+                measurement = make_gnss(gnss_index)
+                if abs(eskf.state.time_s - measurement.time_s) <= config.max_gnss_time_error_s:
+                    eskf.update_gnss_position(measurement)
+                else:
+                    skipped_gnss += 1
+                gnss_index += 1
+            record_state()
+            imu_index += 2
+
+    replay_counts = np.asarray(
+        [result.replayed_imu_samples for result in delayed_results],
+        dtype=float,
+    )
+    timing_metadata = {
+        "update_mode": update_mode,
+        "time_offset_convention": "effective_time = reported_time + offset",
+        "gnss_time_offset_s": gnss_time_offset_s,
+        "fixed_lag_s": fixed_lag_s if update_mode == "delayed-replay" else None,
+        "delayed_update_count": len(delayed_results),
+        "mean_replayed_imu_samples": (
+            float(np.mean(replay_counts)) if replay_counts.size else 0.0
+        ),
+        "max_replayed_imu_samples": (
+            int(np.max(replay_counts)) if replay_counts.size else 0
+        ),
+    }
 
     _write_outputs(
         args.output_dir,
@@ -513,12 +589,14 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         skipped_gnss,
         args.imu_profile,
         initialization_metadata,
+        timing_metadata,
     )
     return {
         "eskf": eskf,
         "history": history,
         "skipped_gnss": skipped_gnss,
         "initialization": initialization_metadata,
+        "gnss_timing": timing_metadata,
     }
 
 

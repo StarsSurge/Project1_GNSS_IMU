@@ -3,11 +3,12 @@
 The implementation is designed for auditable offline replay and algorithm
 development.  It includes WGS-84 Earth rotation, transport rate, normal
 gravity, two-sample IMU mechanization, GNSS antenna lever arm, innovation
-gating, Joseph covariance updates, and covariance health checks.
+gating, Joseph covariance updates, and covariance health checks. Fixed-lag
+delayed updates are provided by :mod:`gnss_imu.delayed_eskf`.
 
 It is a verified MVP, not a deployment certification.  Scale-factor,
-misalignment, temperature models, exact delayed-measurement handling, and
-sensor-specific calibration remain integration responsibilities.
+misalignment, temperature models, clock-drift estimation, and sensor-specific
+calibration remain integration responsibilities.
 """
 
 from __future__ import annotations

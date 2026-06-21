@@ -74,6 +74,14 @@ from gnss_imu.imu_initialization import (
     StaticAlignmentResult,
     initialize_from_static_imu,
 )
+from gnss_imu.delayed_eskf import (
+    DelayedGNSSUpdateResult,
+    FixedLagGNSSFusion,
+    TimeOffsetCalibrationResult,
+    TimeOffsetCandidateScore,
+    calibrate_constant_gnss_time_offset,
+    clone_eskf_state,
+)
 from gnss_imu.dataset_visualization import (
     Dataset1,
     ImuIncrementData,
@@ -146,6 +154,13 @@ __all__ = [
     "StaticAlignmentDiagnostics",
     "StaticAlignmentResult",
     "initialize_from_static_imu",
+    # Delayed GNSS and time-offset calibration
+    "DelayedGNSSUpdateResult",
+    "FixedLagGNSSFusion",
+    "TimeOffsetCandidateScore",
+    "TimeOffsetCalibrationResult",
+    "calibrate_constant_gnss_time_offset",
+    "clone_eskf_state",
     # Dataset visualization
     "Dataset1",
     "RtkData",
