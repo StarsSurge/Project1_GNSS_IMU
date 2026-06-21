@@ -60,6 +60,44 @@ class TimeOffsetCalibrationResult:
 
 
 @dataclass(frozen=True)
+class TimeOffsetProfileInterval:
+    """Approximate profile-NIS interval around one window's best offset."""
+
+    best_offset_s: float
+    lower_offset_s: float | None
+    upper_offset_s: float | None
+    standard_uncertainty_s: float | None
+    confidence_level: float
+    delta_total_nis: float
+    lower_bounded: bool
+    upper_bounded: bool
+    grid_half_step_s: float
+    resolution_limited: bool
+
+
+@dataclass(frozen=True)
+class ClockModelComparison:
+    """Weighted constant-offset versus linear clock-drift comparison."""
+
+    reference_time_s: float
+    window_count: int
+    constant_offset_s: float
+    constant_offset_ci95_s: tuple[float, float]
+    linear_offset_at_reference_s: float
+    linear_offset_ci95_s: tuple[float, float]
+    drift_s_per_s: float
+    drift_ci95_s_per_s: tuple[float, float]
+    drift_ppm: float
+    drift_ci95_ppm: tuple[float, float]
+    constant_bic: float
+    linear_bic: float
+    delta_bic_constant_minus_linear: float
+    constant_weighted_rms: float
+    linear_weighted_rms: float
+    preferred_model: str
+
+
+@dataclass(frozen=True)
 class _FilterSnapshot:
     state: ESKFState
     accepted_updates: int
@@ -276,6 +314,229 @@ class FixedLagGNSSFusion:
             eskf.accepted_gnss_updates,
             eskf.rejected_gnss_updates,
         )
+
+
+def estimate_time_offset_profile_interval(
+    calibration: TimeOffsetCalibrationResult,
+    *,
+    delta_total_nis: float = 3.841458820694124,
+) -> TimeOffsetProfileInterval:
+    """Estimate an approximate 95% interval from a one-parameter NIS profile.
+
+    The default threshold is the 95% chi-square increment for one parameter.
+    Because the implementation uses clipped NIS and sequential ESKF updates,
+    this is a diagnostic profile interval rather than a coverage-certified
+    statistical confidence interval.
+    """
+    if not np.isfinite(delta_total_nis) or delta_total_nis <= 0.0:
+        raise ValueError("delta_total_nis must be positive and finite")
+    if len(calibration.scores) < 3:
+        raise ValueError("profile interval requires at least three candidates")
+
+    ordered = sorted(calibration.scores, key=lambda item: item.offset_s)
+    offsets = np.asarray([item.offset_s for item in ordered], dtype=float)
+    if np.any(np.diff(offsets) <= 0.0):
+        raise ValueError("candidate offsets must be unique")
+    counts = np.asarray([item.measurement_count for item in ordered], dtype=float)
+    if np.any(counts <= 0.0):
+        raise ValueError("candidate measurement counts must be positive")
+    # robust_mean_nis 是逐历元均值；乘 measurement_count 后才是总 NIS 剖面。
+    objectives = np.asarray(
+        [item.robust_mean_nis for item in ordered],
+        dtype=float,
+    ) * counts
+    if not np.all(np.isfinite(objectives)):
+        raise ValueError("candidate scores must be finite")
+    best_index = int(np.argmin(objectives))
+    refined_best_offset = float(offsets[best_index])
+    refined_minimum = float(objectives[best_index])
+    if 0 < best_index < offsets.size - 1:
+        local_x = offsets[best_index - 1 : best_index + 2]
+        local_y = objectives[best_index - 1 : best_index + 2]
+        quadratic = np.polyfit(local_x, local_y, 2)
+        if quadratic[0] > 0.0:
+            vertex = float(-quadratic[1] / (2.0 * quadratic[0]))
+            if local_x[0] <= vertex <= local_x[-1]:
+                refined_best_offset = vertex
+                refined_minimum = min(
+                    refined_minimum,
+                    float(np.polyval(quadratic, vertex)),
+                )
+    threshold = float(refined_minimum + delta_total_nis)
+
+    def interpolate_crossing(index_inside: int, index_outside: int) -> float:
+        x_inside = offsets[index_inside]
+        x_outside = offsets[index_outside]
+        y_inside = objectives[index_inside]
+        y_outside = objectives[index_outside]
+        if abs(y_outside - y_inside) < 1e-15:
+            return float(0.5 * (x_inside + x_outside))
+        fraction = (threshold - y_inside) / (y_outside - y_inside)
+        return float(x_inside + np.clip(fraction, 0.0, 1.0) * (x_outside - x_inside))
+
+    lower: float | None = None
+    lower_bounded = False
+    inside_index = best_index
+    while inside_index > 0 and objectives[inside_index - 1] <= threshold:
+        inside_index -= 1
+    if inside_index > 0:
+        lower = interpolate_crossing(inside_index, inside_index - 1)
+        lower_bounded = True
+
+    upper: float | None = None
+    upper_bounded = False
+    inside_index = best_index
+    while inside_index + 1 < offsets.size and objectives[inside_index + 1] <= threshold:
+        inside_index += 1
+    if inside_index + 1 < offsets.size:
+        upper = interpolate_crossing(inside_index, inside_index + 1)
+        upper_bounded = True
+
+    neighboring_steps = []
+    if best_index > 0:
+        neighboring_steps.append(offsets[best_index] - offsets[best_index - 1])
+    if best_index + 1 < offsets.size:
+        neighboring_steps.append(offsets[best_index + 1] - offsets[best_index])
+    grid_half_step = float(0.5 * min(neighboring_steps))
+    resolution_limited = False
+    if lower is not None and upper is not None:
+        conservative_lower = refined_best_offset - grid_half_step
+        conservative_upper = refined_best_offset + grid_half_step
+        if lower > conservative_lower or upper < conservative_upper:
+            resolution_limited = True
+            lower = min(lower, conservative_lower)
+            upper = max(upper, conservative_upper)
+
+    standard_uncertainty = None
+    if lower is not None and upper is not None:
+        standard_uncertainty = float((upper - lower) / (2.0 * 1.959963984540054))
+    return TimeOffsetProfileInterval(
+        best_offset_s=refined_best_offset,
+        lower_offset_s=lower,
+        upper_offset_s=upper,
+        standard_uncertainty_s=standard_uncertainty,
+        confidence_level=0.95,
+        delta_total_nis=float(delta_total_nis),
+        lower_bounded=lower_bounded,
+        upper_bounded=upper_bounded,
+        grid_half_step_s=grid_half_step,
+        resolution_limited=resolution_limited,
+    )
+
+
+def compare_clock_offset_models(
+    window_center_times_s: Sequence[float],
+    window_offsets_s: Sequence[float],
+    standard_uncertainties_s: Sequence[float] | None = None,
+) -> ClockModelComparison:
+    """Compare constant offset and linear drift using weighted least squares.
+
+    Model: ``offset(t) = offset_ref + drift * (t - reference_time)``.
+    A linear model is selected only when BIC improves by at least 6 and the
+    approximate 95% drift interval excludes zero.
+    """
+    times = np.asarray(window_center_times_s, dtype=float)
+    offsets = np.asarray(window_offsets_s, dtype=float)
+    if times.ndim != 1 or offsets.ndim != 1 or times.size != offsets.size:
+        raise ValueError("window times and offsets must be same-length vectors")
+    if times.size < 4:
+        raise ValueError("clock model comparison requires at least four windows")
+    if not np.all(np.isfinite(times)) or not np.all(np.isfinite(offsets)):
+        raise ValueError("window times and offsets must be finite")
+    if np.ptp(times) <= 0.0:
+        raise ValueError("window center times must span a nonzero interval")
+    uncertainties_are_known = standard_uncertainties_s is not None
+    if standard_uncertainties_s is None:
+        uncertainties = np.ones(times.size)
+    else:
+        uncertainties = np.asarray(standard_uncertainties_s, dtype=float)
+        if uncertainties.shape != times.shape:
+            raise ValueError("standard uncertainties must match window offsets")
+        if not np.all(np.isfinite(uncertainties)) or np.any(uncertainties <= 0.0):
+            raise ValueError("standard uncertainties must be positive and finite")
+
+    weights = 1.0 / uncertainties**2
+    reference_time = float(np.sum(weights * times) / np.sum(weights))
+    centered_time = times - reference_time
+    design_constant = np.ones((times.size, 1))
+    design_linear = np.column_stack([np.ones(times.size), centered_time])
+
+    def weighted_fit(design: np.ndarray) -> tuple[np.ndarray, np.ndarray, float, float]:
+        normal = design.T @ (weights[:, None] * design)
+        if np.linalg.cond(normal) > 1e14:
+            raise ValueError("clock model fit is numerically ill-conditioned")
+        covariance_base = np.linalg.inv(normal)
+        parameters = covariance_base @ (design.T @ (weights * offsets))
+        normalized_residual = (offsets - design @ parameters) / uncertainties
+        weighted_rss = float(normalized_residual @ normalized_residual)
+        dof = times.size - design.shape[1]
+        # 已知窗口区间给出基础权重；若窗口间离散更大，则用 reduced chi-square 膨胀区间。
+        reduced_chi_square = weighted_rss / dof
+        covariance_scale = (
+            max(1.0, reduced_chi_square)
+            if uncertainties_are_known
+            else max(np.finfo(float).eps, reduced_chi_square)
+        )
+        covariance = covariance_base * covariance_scale
+        weighted_rms = float(np.sqrt(weighted_rss / times.size))
+        return parameters, covariance, weighted_rss, weighted_rms
+
+    constant_parameters, constant_covariance, constant_rss, constant_rms = weighted_fit(
+        design_constant
+    )
+    linear_parameters, linear_covariance, linear_rss, linear_rms = weighted_fit(
+        design_linear
+    )
+    sample_count = times.size
+    epsilon = np.finfo(float).tiny
+    constant_bic = float(
+        sample_count * np.log(max(constant_rss / sample_count, epsilon))
+        + np.log(sample_count)
+    )
+    linear_bic = float(
+        sample_count * np.log(max(linear_rss / sample_count, epsilon))
+        + 2.0 * np.log(sample_count)
+    )
+    delta_bic = constant_bic - linear_bic
+    z95 = 1.959963984540054
+    constant_std = float(np.sqrt(constant_covariance[0, 0]))
+    linear_offset_std = float(np.sqrt(linear_covariance[0, 0]))
+    drift_std = float(np.sqrt(linear_covariance[1, 1]))
+    constant_offset = float(constant_parameters[0])
+    linear_offset = float(linear_parameters[0])
+    drift = float(linear_parameters[1])
+    drift_ci = (drift - z95 * drift_std, drift + z95 * drift_std)
+    drift_excludes_zero = drift_ci[0] > 0.0 or drift_ci[1] < 0.0
+    if delta_bic >= 6.0 and drift_excludes_zero:
+        preferred_model = "linear-drift"
+    elif delta_bic <= 2.0 and not drift_excludes_zero:
+        preferred_model = "constant"
+    else:
+        preferred_model = "inconclusive"
+    return ClockModelComparison(
+        reference_time_s=reference_time,
+        window_count=int(sample_count),
+        constant_offset_s=constant_offset,
+        constant_offset_ci95_s=(
+            constant_offset - z95 * constant_std,
+            constant_offset + z95 * constant_std,
+        ),
+        linear_offset_at_reference_s=linear_offset,
+        linear_offset_ci95_s=(
+            linear_offset - z95 * linear_offset_std,
+            linear_offset + z95 * linear_offset_std,
+        ),
+        drift_s_per_s=drift,
+        drift_ci95_s_per_s=drift_ci,
+        drift_ppm=drift * 1e6,
+        drift_ci95_ppm=(drift_ci[0] * 1e6, drift_ci[1] * 1e6),
+        constant_bic=constant_bic,
+        linear_bic=linear_bic,
+        delta_bic_constant_minus_linear=delta_bic,
+        constant_weighted_rms=constant_rms,
+        linear_weighted_rms=linear_rms,
+        preferred_model=preferred_model,
+    )
 
 
 def calibrate_constant_gnss_time_offset(

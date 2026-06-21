@@ -106,3 +106,34 @@ def test_mems_external_yaw_initialization_runs(tmp_path) -> None:
     assert summary["initialization"]["yaw_source"] == "external"
     assert summary["accepted_gnss_updates"] >= 1
     assert result["eskf"].accepted_gnss_updates >= 1
+
+
+def test_dataset1_outage_enters_and_completes_cautious_recovery(tmp_path) -> None:
+    run_replay(
+        SimpleNamespace(
+            dataset_dir=PROJECT_ROOT / "data" / "dataset1",
+            output_dir=tmp_path,
+            duration_s=6.1,
+            imu_profile="navigation-grade",
+            lever_arm_b_m=(0.14722696, -0.29821683, -0.18079014),
+            initialization="truth",
+            initial_yaw_deg=None,
+            alignment_duration_s=30.0,
+            gnss_outage=[(1.0, 3.0)],
+            gnss_outage_timeout_s=1.5,
+        )
+    )
+
+    summary = json.loads((tmp_path / "summary.json").read_text("utf-8"))
+    events = (tmp_path / "gnss_integrity_events.csv").read_text("utf-8")
+
+    integrity = summary["gnss_integrity"]
+    assert integrity["skipped_outage_gnss"] == 2
+    assert integrity["outage_detection_count"] == 1
+    assert integrity["reacquisition_count"] == 1
+    assert integrity["recovery_completion_count"] == 1
+    assert integrity["final_state"] == "tracking"
+    assert "outage-detected" in events
+    assert "measurement-reacquired" in events
+    assert "recovery-complete" in events
+    assert ",10.0" in events

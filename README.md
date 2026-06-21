@@ -71,7 +71,7 @@ The current Python phase includes:
 - a production-oriented 15-state GNSS/IMU loose ESKF baseline with WGS-84
   mechanization, two-sample corrections, lever arm, NIS gating, Joseph updates,
   calibrated IMU matrices, fixed-lag delayed GNSS replay, constant time-offset
-  scanning, and dataset1 replay outputs
+  scanning, GNSS outage/reacquisition integrity states, and dataset1 replay outputs
 
 ```powershell
 $env:PYTHONPATH = "$PWD\python"
@@ -79,7 +79,13 @@ python python\examples\demo_1d_kalman_filter.py
 python python\examples\demo_kalman_filter.py
 python python\examples\demo_extended_kalman_filter.py
 python python\examples\run_dataset1_eskf.py --duration-s 60
+python python\examples\run_dataset1_gnss_outage.py --duration-s 30
 python python\examples\calibrate_dataset1_gnss_time_offset.py --duration-s 30
+python python\examples\cross_validate_dataset1_gnss_time_offset.py
+python python\examples\audit_dataset1_time_offset_sensitivity.py
+python python\examples\calibrate_dataset1_lever_time.py
+python python\examples\compare_dataset1_time_offset_objectives.py
+python python\examples\validate_dataset1_calibrated_time_offset.py
 python -m pytest tests
 ```
 

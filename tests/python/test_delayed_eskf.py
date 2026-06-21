@@ -7,8 +7,12 @@ import pytest
 
 from gnss_imu.delayed_eskf import (
     FixedLagGNSSFusion,
+    TimeOffsetCalibrationResult,
+    TimeOffsetCandidateScore,
     calibrate_constant_gnss_time_offset,
     clone_eskf_state,
+    compare_clock_offset_models,
+    estimate_time_offset_profile_interval,
 )
 from gnss_imu.loosely_coupled_eskf import (
     ESKFConfig,
@@ -238,3 +242,120 @@ def test_time_offset_calibration_rejects_unobservable_static_data() -> None:
             lag_s=0.1,
             min_peak_speed_mps=1.0,
         )
+
+
+def make_profile_result(best_at_boundary: bool = False) -> TimeOffsetCalibrationResult:
+    offsets = np.array([-0.02, -0.01, 0.0, 0.01, 0.02])
+    if best_at_boundary:
+        total_nis = ((offsets - 0.02) / 0.01) ** 2
+        best_offset = 0.02
+    else:
+        total_nis = (offsets / 0.01) ** 2
+        best_offset = 0.0
+    measurement_count = 10
+    scores = tuple(
+        TimeOffsetCandidateScore(
+            offset_s=float(offset),
+            robust_mean_nis=float(objective / measurement_count),
+            median_nis=float(objective / measurement_count),
+            measurement_count=measurement_count,
+            accepted_count=measurement_count,
+            rejected_count=0,
+        )
+        for offset, objective in zip(offsets, total_nis)
+    )
+    return TimeOffsetCalibrationResult(best_offset, scores, peak_speed_mps=5.0)
+
+
+def test_profile_interval_interpolates_threshold_crossings() -> None:
+    interval = estimate_time_offset_profile_interval(make_profile_result())
+
+    assert interval.best_offset_s == pytest.approx(0.0)
+    assert interval.lower_bounded
+    assert interval.upper_bounded
+    assert interval.lower_offset_s == pytest.approx(-0.0194715, abs=1e-6)
+    assert interval.upper_offset_s == pytest.approx(0.0194715, abs=1e-6)
+    assert interval.standard_uncertainty_s is not None
+
+
+def test_profile_interval_reports_scan_boundary_as_unbounded() -> None:
+    interval = estimate_time_offset_profile_interval(
+        make_profile_result(best_at_boundary=True)
+    )
+
+    assert interval.lower_bounded
+    assert interval.upper_offset_s is None
+    assert not interval.upper_bounded
+    assert interval.standard_uncertainty_s is None
+
+
+def test_profile_interval_refines_best_offset_below_grid_spacing() -> None:
+    offsets = np.array([-0.02, -0.01, 0.0, 0.01, 0.02])
+    true_offset = 0.003
+    measurement_count = 10
+    objectives = ((offsets - true_offset) / 0.01) ** 2
+    scores = tuple(
+        TimeOffsetCandidateScore(
+            float(offset),
+            float(objective / measurement_count),
+            float(objective / measurement_count),
+            measurement_count,
+            measurement_count,
+            0,
+        )
+        for offset, objective in zip(offsets, objectives)
+    )
+    calibration = TimeOffsetCalibrationResult(0.0, scores, peak_speed_mps=5.0)
+
+    interval = estimate_time_offset_profile_interval(calibration)
+
+    assert interval.best_offset_s == pytest.approx(true_offset, abs=1e-12)
+
+
+def test_profile_interval_cannot_claim_subgrid_resolution() -> None:
+    offsets = np.array([-0.01, 0.0, 0.01])
+    scores = tuple(
+        TimeOffsetCandidateScore(float(offset), score, score, 20, 20, 0)
+        for offset, score in zip(offsets, (100.0, 0.0, 100.0))
+    )
+    calibration = TimeOffsetCalibrationResult(0.0, scores, peak_speed_mps=5.0)
+
+    interval = estimate_time_offset_profile_interval(calibration)
+
+    assert interval.resolution_limited
+    assert interval.lower_offset_s == pytest.approx(-0.005)
+    assert interval.upper_offset_s == pytest.approx(0.005)
+    assert interval.standard_uncertainty_s > 0.0
+
+
+def test_clock_model_comparison_selects_constant_offset() -> None:
+    times = np.arange(8, dtype=float) * 100.0
+    offsets = 0.012 + np.array(
+        [-0.0002, 0.0001, 0.0002, -0.0001, 0.0001, -0.0002, 0.0002, -0.0001]
+    )
+
+    comparison = compare_clock_offset_models(times, offsets, np.full(8, 0.001))
+
+    assert comparison.preferred_model == "constant"
+    assert comparison.constant_offset_s == pytest.approx(0.012, abs=1e-4)
+    assert comparison.drift_ci95_s_per_s[0] < 0.0 < comparison.drift_ci95_s_per_s[1]
+
+    unweighted = compare_clock_offset_models(times, offsets)
+    assert unweighted.preferred_model == "constant"
+    assert np.all(np.isfinite(unweighted.constant_offset_ci95_s))
+
+
+def test_clock_model_comparison_detects_linear_drift() -> None:
+    times = np.arange(8, dtype=float) * 100.0
+    reference_time = float(np.mean(times))
+    true_drift = 20e-6
+    offsets = 0.005 + true_drift * (times - reference_time)
+    offsets += np.array([-1.0, 0.5, 0.2, -0.3, 0.4, -0.2, 0.3, -0.1]) * 1e-5
+
+    comparison = compare_clock_offset_models(times, offsets, np.full(8, 0.0002))
+
+    assert comparison.preferred_model == "linear-drift"
+    assert comparison.drift_s_per_s == pytest.approx(true_drift, rel=0.01)
+    assert comparison.drift_ppm == pytest.approx(20.0, rel=0.01)
+    assert comparison.delta_bic_constant_minus_linear > 6.0
+    assert comparison.drift_ci95_s_per_s[0] > 0.0

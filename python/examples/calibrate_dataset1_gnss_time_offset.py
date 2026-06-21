@@ -25,8 +25,10 @@ from gnss_imu import (  # noqa: E402
     IMUNoiseModel,
     TimedIMUIncrement,
     calibrate_constant_gnss_time_offset,
+    clone_eskf_state,
     default_initial_covariance,
     euler_zyx_to_quat,
+    estimate_time_offset_profile_interval,
     load_dataset1,
 )
 
@@ -71,41 +73,58 @@ def run_calibration(args: argparse.Namespace) -> dict[str, object]:
 
     data = load_dataset1(args.dataset_dir)
     requested_start = float(data.truth.time_s[0] + args.start_offset_s)
-    start_imu_index = int(np.searchsorted(data.imu.time_s, requested_start, side="left"))
+    initial_state_override = getattr(args, "initial_state_override", None)
+    start_query = (
+        requested_start
+        if initial_state_override is None
+        else float(initial_state_override.time_s)
+    )
+    start_imu_index = int(np.searchsorted(data.imu.time_s, start_query, side="left"))
     if start_imu_index <= 0 or start_imu_index + 1 >= data.imu.time_s.size:
         raise ValueError("calibration start is outside the usable IMU range")
     start_time_s = float(data.imu.time_s[start_imu_index])
+    if initial_state_override is not None and abs(start_time_s - start_query) > 1e-6:
+        raise ValueError("initial_state_override must coincide with an IMU boundary")
     end_time_s = min(start_time_s + args.duration_s, float(data.imu.time_s[-1]))
 
     truth = data.truth
-    attitude_rpy_deg = np.array(
-        [
-            np.interp(start_time_s, truth.time_s, truth.attitude_rpy_deg[:, axis])
-            for axis in range(3)
-        ]
-    )
-    initial_state = ESKFState(
-        time_s=start_time_s,
-        latitude_rad=np.deg2rad(np.interp(start_time_s, truth.time_s, truth.latitude_deg)),
-        longitude_rad=np.deg2rad(np.interp(start_time_s, truth.time_s, truth.longitude_deg)),
-        height_m=float(np.interp(start_time_s, truth.time_s, truth.height_m)),
-        velocity_ned_mps=np.array(
+    if initial_state_override is None:
+        attitude_rpy_deg = np.array(
             [
-                np.interp(start_time_s, truth.time_s, truth.velocity_ned_mps[:, axis])
+                np.interp(start_time_s, truth.time_s, truth.attitude_rpy_deg[:, axis])
                 for axis in range(3)
             ]
-        ),
-        q_bn=euler_zyx_to_quat(*attitude_rpy_deg, degrees=True),
-        accel_bias_mps2=np.zeros(3),
-        gyro_bias_rps=np.zeros(3),
-        covariance=default_initial_covariance(
-            position_std_m=0.1,
-            velocity_std_mps=0.05,
-            attitude_std_deg=0.2,
-            accel_bias_std_mps2=0.02,
-            gyro_bias_std_deg_s=0.005,
-        ),
-    )
+        )
+        initial_state = ESKFState(
+            time_s=start_time_s,
+            latitude_rad=np.deg2rad(np.interp(start_time_s, truth.time_s, truth.latitude_deg)),
+            longitude_rad=np.deg2rad(np.interp(start_time_s, truth.time_s, truth.longitude_deg)),
+            height_m=float(np.interp(start_time_s, truth.time_s, truth.height_m)),
+            velocity_ned_mps=np.array(
+                [
+                    np.interp(start_time_s, truth.time_s, truth.velocity_ned_mps[:, axis])
+                    for axis in range(3)
+                ]
+            ),
+            q_bn=euler_zyx_to_quat(*attitude_rpy_deg, degrees=True),
+            accel_bias_mps2=np.zeros(3),
+            gyro_bias_rps=np.zeros(3),
+            covariance=default_initial_covariance(
+                position_std_m=0.1,
+                velocity_std_mps=0.05,
+                attitude_std_deg=0.2,
+                accel_bias_std_mps2=0.02,
+                gyro_bias_std_deg_s=0.005,
+            ),
+        )
+        initialization_source = "truth-assisted"
+    else:
+        initial_state = clone_eskf_state(initial_state_override)
+        initialization_source = getattr(
+            args,
+            "initialization_label",
+            "external-state",
+        )
 
     imu_samples = []
     for index in range(start_imu_index + 1, data.imu.time_s.size):
@@ -136,9 +155,25 @@ def run_calibration(args: argparse.Namespace) -> dict[str, object]:
         )
         for index in gnss_indices
     ]
+    noise_scale = float(getattr(args, "imu_noise_scale", 1.0))
+    if not np.isfinite(noise_scale) or noise_scale <= 0.0:
+        raise ValueError("imu_noise_scale must be positive and finite")
+    base_noise = IMUNoiseModel.navigation_grade_default()
+    scaled_noise = IMUNoiseModel(
+        base_noise.accel_noise_density_mps2_sqrthz * noise_scale,
+        base_noise.gyro_noise_density_rps_sqrthz * noise_scale,
+        base_noise.accel_bias_drive_mps2_sqrts * noise_scale,
+        base_noise.gyro_bias_drive_rps_sqrts * noise_scale,
+        base_noise.accel_bias_correlation_s,
+        base_noise.gyro_bias_correlation_s,
+    )
+    gnss_nis_threshold = float(
+        getattr(args, "gnss_nis_threshold", ESKFConfig().gnss_nis_threshold)
+    )
     config = ESKFConfig(
-        imu_noise=IMUNoiseModel.navigation_grade_default(),
+        imu_noise=scaled_noise,
         gnss_lever_arm_b_m=np.asarray(args.lever_arm_b_m, dtype=float),
+        gnss_nis_threshold=gnss_nis_threshold,
     )
     result = calibrate_constant_gnss_time_offset(
         initial_state,
@@ -148,6 +183,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, object]:
         candidates,
         lag_s=args.fixed_lag_s,
     )
+    profile_interval = estimate_time_offset_profile_interval(result)
 
     args.output_dir.mkdir(parents=True, exist_ok=True)
     score_table = np.array(
@@ -180,7 +216,12 @@ def run_calibration(args: argparse.Namespace) -> dict[str, object]:
     fig, axis = plt.subplots(figsize=(8, 4.5))
     axis.plot(score_table[:, 0] * 1e3, score_table[:, 1], marker="o", label="Clipped mean NIS")
     axis.plot(score_table[:, 0] * 1e3, score_table[:, 2], marker="s", label="Median NIS")
-    axis.axvline(result.best_offset_s * 1e3, color="tab:red", linestyle="--", label="Selected offset")
+    axis.axvline(
+        profile_interval.best_offset_s * 1e3,
+        color="tab:red",
+        linestyle="--",
+        label="Quadratic-refined offset",
+    )
     axis.set_xlabel("GNSS time offset [ms]")
     axis.set_ylabel("Innovation score [-]")
     axis.set_title("GNSS Time-Offset Candidate Scan")
@@ -192,9 +233,25 @@ def run_calibration(args: argparse.Namespace) -> dict[str, object]:
     summary = {
         "maturity": "offline calibration MVP",
         "offset_convention": "effective_time = reported_time + offset",
-        "best_offset_s": result.best_offset_s,
+        "initialization_source": initialization_source,
+        "imu_noise_scale": noise_scale,
+        "lever_arm_b_m": np.asarray(args.lever_arm_b_m, dtype=float).tolist(),
+        "gnss_nis_threshold": gnss_nis_threshold,
+        "best_offset_s": profile_interval.best_offset_s,
+        "grid_best_offset_s": result.best_offset_s,
         "best_robust_mean_nis": ordered_scores[0].robust_mean_nis,
         "runner_up_score_margin": score_margin,
+        "profile_interval": {
+            "interpretation": "approximate 95% profile-NIS diagnostic interval",
+            "lower_offset_s": profile_interval.lower_offset_s,
+            "upper_offset_s": profile_interval.upper_offset_s,
+            "standard_uncertainty_s": profile_interval.standard_uncertainty_s,
+            "lower_bounded": profile_interval.lower_bounded,
+            "upper_bounded": profile_interval.upper_bounded,
+            "delta_total_nis": profile_interval.delta_total_nis,
+            "grid_half_step_s": profile_interval.grid_half_step_s,
+            "resolution_limited": profile_interval.resolution_limited,
+        },
         "peak_speed_mps": result.peak_speed_mps,
         "start_time_s": start_time_s,
         "end_time_s": end_time_s,
@@ -217,7 +274,7 @@ def run_calibration(args: argparse.Namespace) -> dict[str, object]:
 def main() -> None:
     args = parse_args()
     summary = run_calibration(args)
-    print(f"Best GNSS time offset: {summary['best_offset_s']:+.6f} s")
+    print(f"Refined GNSS time offset: {summary['best_offset_s']:+.6f} s")
     print(f"Wrote calibration artifacts to {args.output_dir}")
 
 

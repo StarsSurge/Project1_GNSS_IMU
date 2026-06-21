@@ -22,6 +22,19 @@ Current coverage includes:
   gyro bias initialization, and dataset1 navigation-grade gyrocompassing
 - exact mid-interval delayed GNSS replay, fixed-lag expiry, known constant
   time-offset recovery, and static time-offset observability rejection
+- profile-NIS interval interpolation and boundary detection, plus weighted
+  constant-offset versus linear clock-drift model selection
+- sub-grid quadratic refinement with a grid-resolution uncertainty floor
+- robust joint lever/time calibration, observability rejection, MAP lever
+  priors, and fixed-independent-lever time calibration
+- antenna rotational velocity cross-product direction and nonlinear joint
+  lever/time Gauss-Newton verification
+- frozen-trajectory time-offset sign recovery and residual autocorrelation
+  effective-sample-size diagnostics
+- reproducible circular moving-block bootstrap with grid-resolution and
+  candidate-boundary diagnostics
+- GNSS integrity-state transitions, recovery covariance inflation, degradation
+  after consecutive rejects, and dataset1 outage/reacquisition integration
 
 Run from the repository root:
 

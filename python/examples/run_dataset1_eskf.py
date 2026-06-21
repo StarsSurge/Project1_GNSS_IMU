@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import argparse
+import csv
 import json
 import sys
 from pathlib import Path
@@ -21,7 +22,11 @@ if str(PYTHON_DIR) not in sys.path:
 from gnss_imu import (  # noqa: E402
     ESKFConfig,
     ESKFState,
+    GNSSIntegrityConfig,
+    GNSSIntegrityManager,
+    GNSSIntegrityState,
     GNSSPositionMeasurement,
+    GNSSUpdateResult,
     IMUNoiseModel,
     LooselyCoupledESKF,
     FixedLagGNSSFusion,
@@ -107,7 +112,49 @@ def parse_args() -> argparse.Namespace:
         default=2.0,
         help="Retained IMU history for delayed GNSS replay [s].",
     )
+    parser.add_argument(
+        "--gnss-outage",
+        type=float,
+        nargs=2,
+        action="append",
+        default=[],
+        metavar=("START_S", "END_S"),
+        help="Drop GNSS epochs in an elapsed-time interval; may be repeated.",
+    )
+    parser.add_argument(
+        "--gnss-integrity-mode",
+        choices=("off", "recovery"),
+        default="recovery",
+        help="Enable outage detection and cautious GNSS reacquisition.",
+    )
+    parser.add_argument("--gnss-outage-timeout-s", type=float, default=2.0)
+    parser.add_argument("--gnss-recovery-accepts", type=int, default=3)
+    parser.add_argument(
+        "--gnss-recovery-initial-std-scale", type=float, default=10.0
+    )
+    parser.add_argument("--gnss-recovery-scale-decay", type=float, default=0.5)
     return parser.parse_args()
+
+
+def _validated_outage_intervals(
+    intervals: object,
+) -> tuple[tuple[float, float], ...]:
+    """Validate non-overlapping GNSS outage intervals in elapsed seconds."""
+    validated = []
+    for interval in intervals or []:
+        if len(interval) != 2:
+            raise ValueError("each gnss_outage interval needs start and end")
+        start_s, end_s = (float(interval[0]), float(interval[1]))
+        if not np.isfinite(start_s) or not np.isfinite(end_s):
+            raise ValueError("gnss_outage bounds must be finite")
+        if start_s < 0.0 or end_s <= start_s:
+            raise ValueError("gnss_outage requires 0 <= start < end")
+        validated.append((start_s, end_s))
+    validated.sort()
+    for previous, current in zip(validated, validated[1:]):
+        if current[0] < previous[1]:
+            raise ValueError("gnss_outage intervals must not overlap")
+    return tuple(validated)
 
 
 def _interpolate_truth(data, query_time_s: np.ndarray) -> dict[str, np.ndarray]:
@@ -268,6 +315,7 @@ def _write_outputs(
     profile_name: str,
     initialization_metadata: dict[str, object],
     timing_metadata: dict[str, object],
+    integrity_metadata: dict[str, object],
 ) -> None:
     output_dir.mkdir(parents=True, exist_ok=True)
     times = np.asarray(history["time_s"])
@@ -353,6 +401,7 @@ def _write_outputs(
         "maturity": "verified MVP / production-oriented baseline",
         "initialization": initialization_metadata,
         "gnss_timing": timing_metadata,
+        "gnss_integrity": integrity_metadata,
         "imu_profile": profile_name,
         "duration_s": float(times[-1] - times[0]),
         "navigation_epochs": int(times.size),
@@ -431,6 +480,34 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         raise ValueError("gnss_update_mode must be 'delayed-replay' or 'nearest'")
     if not np.isfinite(gnss_time_offset_s):
         raise ValueError("gnss_time_offset_s must be finite")
+    integrity_mode = getattr(args, "gnss_integrity_mode", "recovery")
+    if integrity_mode not in ("off", "recovery"):
+        raise ValueError("gnss_integrity_mode must be 'off' or 'recovery'")
+    outage_intervals = _validated_outage_intervals(
+        getattr(args, "gnss_outage", [])
+    )
+    integrity_manager = None
+    if integrity_mode == "recovery":
+        integrity_config = GNSSIntegrityConfig(
+            outage_timeout_s=float(
+                getattr(args, "gnss_outage_timeout_s", 2.0)
+            ),
+            recovery_required_accepts=int(
+                getattr(args, "gnss_recovery_accepts", 3)
+            ),
+            recovery_initial_std_scale=float(
+                getattr(args, "gnss_recovery_initial_std_scale", 10.0)
+            ),
+            recovery_scale_decay=float(
+                getattr(args, "gnss_recovery_scale_decay", 0.5)
+            ),
+        )
+        integrity_manager = GNSSIntegrityManager(
+            integrity_config,
+            initial_measurement_time_s=float(
+                initialization_metadata.get("gnss_time_s", eskf.state.time_s)
+            ),
+        )
 
     history: dict[str, list] = {
         "time_s": [], "latitude_rad": [], "longitude_rad": [], "height_m": [],
@@ -472,7 +549,37 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         else int(np.searchsorted(data.rtk.time_s, start_time, side="right"))
     )
     skipped_gnss = 0
+    skipped_outage_gnss = 0
     delayed_results = []
+
+    def is_in_outage(time_s: float) -> bool:
+        elapsed_s = time_s - start_time
+        return any(start <= elapsed_s < end for start, end in outage_intervals)
+
+    def prepare_gnss(
+        measurement: GNSSPositionMeasurement,
+    ) -> tuple[GNSSPositionMeasurement, float, GNSSIntegrityState | None]:
+        if integrity_manager is None:
+            return measurement, 1.0, None
+        return integrity_manager.prepare_measurement(measurement)
+
+    def record_gnss_result(
+        measurement: GNSSPositionMeasurement,
+        scale: float,
+        state_before: GNSSIntegrityState | None,
+        update: GNSSUpdateResult,
+    ) -> None:
+        if integrity_manager is None:
+            return
+        if state_before is None:
+            raise RuntimeError("integrity state is required when recovery is enabled")
+        integrity_manager.record_update(
+            measurement.time_s,
+            accepted=update.accepted,
+            nis=update.nis,
+            measurement_std_scale=scale,
+            state_before_update=state_before,
+        )
 
     imu_index = imu_start
     fusion = (
@@ -514,6 +621,8 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
             if imu.time_s > end_time:
                 break
             fusion.process_imu(imu)
+            if integrity_manager is not None:
+                integrity_manager.advance_time(eskf.state.time_s)
             while gnss_index < data.rtk.time_s.size:
                 measurement = make_gnss(gnss_index)
                 delivery_time = max(
@@ -522,11 +631,25 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
                 )
                 if delivery_time > eskf.state.time_s + 1e-9:
                     break
-                delayed_results.append(
-                    fusion.process_gnss(
-                        measurement,
-                        arrival_time_s=eskf.state.time_s,
-                    )
+                if is_in_outage(measurement.time_s):
+                    skipped_outage_gnss += 1
+                    if integrity_manager is not None:
+                        integrity_manager.mark_measurement_missing(
+                            measurement.time_s
+                        )
+                    gnss_index += 1
+                    continue
+                adjusted, scale, state_before = prepare_gnss(measurement)
+                delayed_result = fusion.process_gnss(
+                    adjusted,
+                    arrival_time_s=eskf.state.time_s,
+                )
+                delayed_results.append(delayed_result)
+                record_gnss_result(
+                    measurement,
+                    scale,
+                    state_before,
+                    delayed_result.update,
                 )
                 gnss_index += 1
             if eskf.state.time_s >= start_time - 1e-6:
@@ -550,13 +673,28 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
             if imu2.time_s > end_time:
                 break
             eskf.predict_two_sample(imu1, imu2)
+            if integrity_manager is not None:
+                integrity_manager.advance_time(eskf.state.time_s)
             while (
                 gnss_index < data.rtk.time_s.size
                 and data.rtk.time_s[gnss_index] <= eskf.state.time_s
             ):
                 measurement = make_gnss(gnss_index)
-                if abs(eskf.state.time_s - measurement.time_s) <= config.max_gnss_time_error_s:
-                    eskf.update_gnss_position(measurement)
+                if is_in_outage(measurement.time_s):
+                    skipped_outage_gnss += 1
+                    if integrity_manager is not None:
+                        integrity_manager.mark_measurement_missing(
+                            measurement.time_s
+                        )
+                elif (
+                    abs(eskf.state.time_s - measurement.time_s)
+                    <= config.max_gnss_time_error_s
+                ):
+                    adjusted, scale, state_before = prepare_gnss(measurement)
+                    update = eskf.update_gnss_position(adjusted)
+                    record_gnss_result(
+                        measurement, scale, state_before, update
+                    )
                 else:
                     skipped_gnss += 1
                 gnss_index += 1
@@ -580,6 +718,29 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
             int(np.max(replay_counts)) if replay_counts.size else 0
         ),
     }
+    integrity_metadata = {
+        "mode": integrity_mode,
+        "outage_intervals_elapsed_s": [list(item) for item in outage_intervals],
+        "skipped_outage_gnss": skipped_outage_gnss,
+    }
+    if integrity_manager is not None:
+        integrity_metadata.update(
+            {
+                "config": {
+                    "outage_timeout_s": integrity_manager.config.outage_timeout_s,
+                    "recovery_required_accepts": (
+                        integrity_manager.config.recovery_required_accepts
+                    ),
+                    "recovery_initial_std_scale": (
+                        integrity_manager.config.recovery_initial_std_scale
+                    ),
+                    "recovery_scale_decay": (
+                        integrity_manager.config.recovery_scale_decay
+                    ),
+                },
+                **integrity_manager.summary(),
+            }
+        )
 
     _write_outputs(
         args.output_dir,
@@ -590,13 +751,43 @@ def run_replay(args: argparse.Namespace) -> dict[str, object]:
         args.imu_profile,
         initialization_metadata,
         timing_metadata,
+        integrity_metadata,
     )
+    if integrity_manager is not None:
+        event_rows = [
+            [
+                event.time_s,
+                event.state_before,
+                event.state_after,
+                event.event,
+                "" if event.accepted is None else int(event.accepted),
+                "" if event.nis is None else event.nis,
+                event.measurement_std_scale,
+            ]
+            for event in integrity_manager.events
+        ]
+        event_path = args.output_dir / "gnss_integrity_events.csv"
+        with event_path.open("w", encoding="utf-8", newline="") as stream:
+            writer = csv.writer(stream)
+            writer.writerow(
+                [
+                    "time_s",
+                    "state_before",
+                    "state_after",
+                    "event",
+                    "accepted",
+                    "nis",
+                    "measurement_std_scale",
+                ]
+            )
+            writer.writerows(event_rows)
     return {
         "eskf": eskf,
         "history": history,
         "skipped_gnss": skipped_gnss,
         "initialization": initialization_metadata,
         "gnss_timing": timing_metadata,
+        "gnss_integrity": integrity_metadata,
     }
 
 
